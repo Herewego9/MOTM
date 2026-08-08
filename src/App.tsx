@@ -17,28 +17,14 @@ const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
 const SHARED_KEY = "st70-shared";
 const PERSONAL_KEY = "st70-voted-by-me";
 
-// Kampprogrammet er nu en del af det delte data (kan opdateres fra DBU via Admin → Kampprogram).
-// Dette er standardlisten, som bruges indtil nogen henter et opdateret kampprogram.
-const DEFAULT_MATCHES = [
-  { id: 369198, date: "2026-08-16", time: "14:00", home: "ST 70",               away: "VSK Aarhus (1)",         venue: "Trige Søndergård" },
-  { id: 369200, date: "2026-08-24", time: "18:30", home: "Christiansbjerg IF (2)", away: "ST 70",               venue: "Christiansbjerg Idrætsanlæg" },
-  { id: 369202, date: "2026-09-03", time: "18:40", home: "Lisbjerg FC",           away: "ST 70",                venue: "Lisbjerg Skole" },
-  { id: 369207, date: "2026-09-06", time: "14:00", home: "ST 70",               away: "Fuglebakken KFUM (6)",   venue: "Trige Søndergård" },
-  { id: 369210, date: "2026-09-13", time: "12:00", home: "Hasle B (2)",          away: "ST 70",                 venue: "Ellehøjskolen" },
-  { id: 369211, date: "2026-09-20", time: "11:00", home: "VSK Aarhus (1)",       away: "ST 70",                 venue: "VSK Aarhus" },
-  { id: 369216, date: "2026-09-27", time: "14:00", home: "ST 70",               away: "Christiansbjerg IF (2)", venue: "Trige Søndergård" },
-  { id: 369219, date: "2026-10-06", time: "19:00", home: "ST 70",               away: "Lisbjerg FC",            venue: "Trige Søndergård" },
-  { id: 369220, date: "2026-10-11", time: "16:00", home: "Fuglebakken KFUM (6)", away: "ST 70",                 venue: "Ellehøjskolen" },
-  { id: 369227, date: "2026-10-25", time: "14:00", home: "ST 70",               away: "Hasle B (2)",            venue: "Trige Søndergård" },
-];
-
 const INIT_SHARED = {
   openMatchId: null,
   votes: {},
   revealed: {},
   matchStats: {},
   squadNames: [],
-  matches: DEFAULT_MATCHES,
+  matches: [], // Tomt som udgangspunkt – hentes ind via Admin → Kampprogram (DBU-link)
+  seasonHistory: [], // Arkiverede, afsluttede sæsoner (se ARCHIVE ved RESET/RESET_SEASON)
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -138,6 +124,23 @@ function savePersonal(personal) {
   catch (e) { console.error("Kunne ikke gemme personlig data:", e); }
 }
 
+// Gemmer et øjebliksbillede af den nuværende sæson i arkivet, før den nulstilles.
+// Springes over, hvis der reelt ikke er noget at gemme (tomt kampprogram).
+function archiveCurrentSeason(state, label) {
+  const hasData = (state.matches && state.matches.length > 0) || Object.keys(state.matchStats || {}).length > 0;
+  if (!hasData) return state.seasonHistory || [];
+  const snapshot = {
+    id: Date.now(),
+    label: (label && label.trim()) || `Sæson afsluttet ${fmtDanishTime(new Date().toISOString())}`,
+    archivedAt: new Date().toISOString(),
+    matches: state.matches,
+    votes: state.votes,
+    matchStats: state.matchStats,
+    revealed: state.revealed,
+  };
+  return [...(state.seasonHistory || []), snapshot];
+}
+
 // ============================================================
 // REDUCER
 // ============================================================
@@ -202,14 +205,19 @@ function reducer(state, action) {
       // Bruges ved opdatering INDEN FOR samme sæson – fx et tidspunkt der ændres.
       // Stemmer/statistik rører vi ikke, de er koblet til kampens DBU-nummer.
       return { ...state, matches: action.matches };
-    case "RESET_SEASON":
+    case "RESET_SEASON": {
       // Bruges ved en HELT NY sæson – nyt kampprogram, og alt gammelt data
-      // (stemmer, statistik, åben afstemning) nulstilles bevidst.
-      return { ...state, matches: action.matches, votes: {}, revealed: {}, matchStats: {}, openMatchId: null };
+      // (stemmer, statistik, åben afstemning) nulstilles bevidst. Den afsluttede
+      // sæson arkiveres først, så man altid kan slå gamle tal op senere.
+      const archive = archiveCurrentSeason(state, action.label);
+      return { ...state, matches: action.matches, votes: {}, revealed: {}, matchStats: {}, openMatchId: null, seasonHistory: archive };
+    }
     case "IMPORT_STATE":
       return { ...INIT, ...action.state };
-    case "RESET":
-      return { ...INIT };
+    case "RESET": {
+      const archive = archiveCurrentSeason(state, action.label);
+      return { ...INIT, seasonHistory: archive };
+    }
     default:
       return state;
   }
@@ -285,7 +293,9 @@ function VoteView({ state, dispatch }) {
 
       <div style={S.card}>
         <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>Kampprogram</div>
-        {state.matches.map(m => {
+        {state.matches.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "16px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Admin kan hente det under Admin → Kampprogram.</div>
+        ) : state.matches.map(m => {
           const isActive = m.id === openMatchId;
           const done = revealed[m.id];
           return (
@@ -304,8 +314,28 @@ function VoteView({ state, dispatch }) {
 // ============================================================
 // STATS VIEW (public, fuld tabel)
 // ============================================================
+// ============================================================
+// SÆSON-VÆLGER (bruges af Statistik og Rangliste)
+// ============================================================
+function SeasonSelector({ state, selectedId, onChange }) {
+  const history = state.seasonHistory || [];
+  if (!history.length) return null; // ingen arkiverede sæsoner endnu – ingen grund til at vise vælgeren
+  return (
+    <div style={{ marginBottom: "14px" }}>
+      <select style={{ ...S.input, marginBottom: 0 }} value={selectedId} onChange={e => onChange(e.target.value)}>
+        <option value="current">Nuværende sæson</option>
+        {[...history].reverse().map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function StatsView({ state }) {
-  const seasonStats = deriveSeasonStats(state.matchStats);
+  const [selectedId, setSelectedId] = useState("current");
+  const archived = selectedId !== "current" ? (state.seasonHistory || []).find(s => String(s.id) === String(selectedId)) : null;
+  const matchStatsSource = archived ? archived.matchStats : state.matchStats;
+
+  const seasonStats = deriveSeasonStats(matchStatsSource);
   const players = Object.values(seasonStats).sort((a, b) => b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
   const cols = [
     { label: "Kampe", key: "matchesPlayed", emoji: "⚽" },
@@ -316,29 +346,34 @@ function StatsView({ state }) {
     { label: "MOTM", key: "motmWins", emoji: "⭐" },
   ];
 
-  if (!players.length) return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen statistik endnu.</div></div>;
-
   return (
-    <div style={S.card}>
-      <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>Sæsonstatistik</div>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", padding: "7px 8px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }}>Spiller</th>
-              {cols.map(c => <th key={c.key} style={{ textAlign: "center", padding: "7px 5px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }} title={c.label}>{c.emoji}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {players.map((p, i) => (
-              <tr key={p.name} style={{ background: i === 0 ? "rgba(212,160,23,0.06)" : "transparent" }}>
-                <td style={{ padding: "8px 8px", fontWeight: i === 0 ? 700 : 500, color: i === 0 ? C.gold : C.text, borderBottom: `1px solid ${C.border}` }}>{i === 0 ? "⭐ " : ""}{p.name}</td>
-                {cols.map(c => <td key={c.key} style={{ textAlign: "center", padding: "8px 5px", borderBottom: `1px solid ${C.border}`, color: (p[c.key] || 0) > 0 ? C.text : C.muted, fontWeight: (p[c.key] || 0) > 0 ? 600 : 400 }}>{p[c.key] || 0}</td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div>
+      <SeasonSelector state={state} selectedId={selectedId} onChange={setSelectedId} />
+      {!players.length ? (
+        <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen statistik {archived ? "for denne sæson" : "endnu"}.</div></div>
+      ) : (
+        <div style={S.card}>
+          <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", padding: "7px 8px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }}>Spiller</th>
+                  {cols.map(c => <th key={c.key} style={{ textAlign: "center", padding: "7px 5px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }} title={c.label}>{c.emoji}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {players.map((p, i) => (
+                  <tr key={p.name} style={{ background: i === 0 ? "rgba(212,160,23,0.06)" : "transparent" }}>
+                    <td style={{ padding: "8px 8px", fontWeight: i === 0 ? 700 : 500, color: i === 0 ? C.gold : C.text, borderBottom: `1px solid ${C.border}` }}>{i === 0 ? "⭐ " : ""}{p.name}</td>
+                    {cols.map(c => <td key={c.key} style={{ textAlign: "center", padding: "8px 5px", borderBottom: `1px solid ${C.border}`, color: (p[c.key] || 0) > 0 ? C.text : C.muted, fontWeight: (p[c.key] || 0) > 0 ? 600 : 400 }}>{p[c.key] || 0}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -347,39 +382,46 @@ function StatsView({ state }) {
 // RANKING VIEW (automatisk rangliste)
 // ============================================================
 function RankingView({ state }) {
-  const seasonStats = deriveSeasonStats(state.matchStats);
+  const [selectedId, setSelectedId] = useState("current");
+  const archived = selectedId !== "current" ? (state.seasonHistory || []).find(s => String(s.id) === String(selectedId)) : null;
+  const matchStatsSource = archived ? archived.matchStats : state.matchStats;
+
+  const seasonStats = deriveSeasonStats(matchStatsSource);
   const players = Object.values(seasonStats)
     .map(p => ({ ...p, score: scorePlayer(p) }))
     .sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
 
-  if (!players.length) return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ranglisten opdateres, når der er registreret statistik.</div></div>;
-
   const medal = i => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
-  const maxScore = players[0].score || 1;
+  const maxScore = players[0]?.score || 1;
 
   return (
     <div>
-      <div style={S.card}>
-        <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "4px" }}>🏅 Sæsonens rangliste</div>
-        <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px" }}>
-          Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort
-        </div>
-        {players.map((p, i) => (
-          <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
-            <div style={{ fontSize: i < 3 ? "20px" : "13px", width: "28px", textAlign: "center", color: i < 3 ? undefined : C.muted, fontWeight: 700 }}>{medal(i)}</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: i === 0 ? 700 : 600, fontSize: "14px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
-              <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "3px" }}>
-                <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
-              </div>
-              <div style={{ height: "4px", background: C.border, borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#a855f7" : C.muted, borderRadius: "2px" }} />
-              </div>
-            </div>
-            <div style={{ fontSize: "16px", fontWeight: 800, color: i === 0 ? C.gold : C.text, minWidth: "34px", textAlign: "right" }}>{p.score}</div>
+      <SeasonSelector state={state} selectedId={selectedId} onChange={setSelectedId} />
+      {!players.length ? (
+        <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ranglisten opdateres, når der er registreret statistik.</div></div>
+      ) : (
+        <div style={S.card}>
+          <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "4px" }}>🏅 {archived ? archived.label : "Sæsonens rangliste"}</div>
+          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px" }}>
+            Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort
           </div>
-        ))}
-      </div>
+          {players.map((p, i) => (
+            <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
+              <div style={{ fontSize: i < 3 ? "20px" : "13px", width: "28px", textAlign: "center", color: i < 3 ? undefined : C.muted, fontWeight: 700 }}>{medal(i)}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: i === 0 ? 700 : 600, fontSize: "14px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
+                <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "3px" }}>
+                  <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
+                </div>
+                <div style={{ height: "4px", background: C.border, borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#a855f7" : C.muted, borderRadius: "2px" }} />
+                </div>
+              </div>
+              <div style={{ fontSize: "16px", fontWeight: 800, color: i === 0 ? C.gold : C.text, minWidth: "34px", textAlign: "right" }}>{p.score}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -425,7 +467,11 @@ function AdminView({ state, dispatch }) {
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
 
       <div style={{ marginTop: "22px", paddingTop: "14px", borderTop: `1px solid ${C.border}` }}>
-        <button style={{ ...S.btn("secondary", false), fontSize: "11px", color: C.muted }} onClick={() => { if (window.confirm("Nulstil ALT data for hele sæsonen? Lav evt. en backup først under 'Backup'.")) dispatch({ type: "RESET" }); }}>Nulstil alt data</button>
+        <button style={{ ...S.btn("secondary", false), fontSize: "11px", color: C.muted }} onClick={() => {
+          if (!window.confirm("Nulstil ALT data (kampprogram, stemmer, statistik)? Den nuværende sæson arkiveres automatisk, så du kan se tallene igen senere under Statistik/Rangliste.")) return;
+          const label = window.prompt("Navngiv sæsonen der afsluttes (fx 'Efterår 2026'):", `Sæson ${new Date().getFullYear()}`);
+          dispatch({ type: "RESET", label });
+        }}>Nulstil alt data</button>
       </div>
     </div>
   );
@@ -436,6 +482,9 @@ function MatchesTab({ state, dispatch }) {
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}>Åbn afstemning for én kamp ad gangen. Du kan nulstille stemmer uden at miste statistik.</div>
+      {state.matches.length === 0 && (
+        <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Gå til fanen "Kampprogram" for at hente det fra DBU.</div>
+      )}
       {state.matches.map(m => {
         const isOpen = state.openMatchId === m.id;
         const isRevealed = state.revealed[m.id];
@@ -546,6 +595,9 @@ function StatsTab({ state, dispatch }) {
       <input style={{ ...S.input, marginBottom: 0, textAlign: "center" }} type="number" min="0" max="20" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
     </div>
   );
+  if (!state.matches.length) {
+    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Gå til fanen "Kampprogram" for at hente det fra DBU.</div></div>;
+  }
 
   return (
     <div>
@@ -574,7 +626,8 @@ function StatsTab({ state, dispatch }) {
 
         {suggestion && (
           <div style={{ marginTop: "14px" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", marginBottom: "10px" }}>
+            <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", marginBottom: "10px", minWidth: "420px" }}>
               <thead><tr>{["Min.", "Scorer", "Assist", ""].map((h, i) => <th key={i} style={{ textAlign: "left", padding: "5px 6px", color: C.muted, fontSize: "10px", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}</tr></thead>
               <tbody>
                 {suggestion.map((g, i) => (
@@ -590,7 +643,8 @@ function StatsTab({ state, dispatch }) {
                 ))}
               </tbody>
             </table>
-            <button style={S.btn("primary", false)} onClick={applySuggestion}>Anvend forslag som statistik</button>
+            </div>
+            <button style={{ ...S.btn("primary", false), marginTop: "10px" }} onClick={applySuggestion}>Anvend forslag som statistik</button>
           </div>
         )}
       </div>
@@ -607,7 +661,7 @@ function StatsTab({ state, dispatch }) {
         ) : (
           <input style={{ ...S.input, background: editingKey ? "#1c2128" : C.inputBg }} placeholder="Fx Lars Andersen" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} readOnly={!!editingKey} />
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "8px", marginBottom: "12px" }}>
+        <div className="motm-numgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "8px", marginBottom: "12px" }}>
           {numInput("goals", "Mål 🥅")}{numInput("assists", "Assist 🎯")}{numInput("yellowCards", "Gult 🟨")}{numInput("redCards", "Rødt 🟥")}
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
@@ -619,21 +673,23 @@ function StatsTab({ state, dispatch }) {
       {matchData.players.length > 0 && (
         <div>
           <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>Registrerede spillere</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+          <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", minWidth: "380px" }}>
             <thead><tr>{["Spiller", "Mål", "Ast", "🟨", "🟥", ""].map((h, i) => <th key={i} style={{ textAlign: i === 0 ? "left" : "center", padding: "6px 6px", color: C.muted, fontSize: "10px", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}</tr></thead>
             <tbody>
               {matchData.players.map((p, i) => (
                 <tr key={i} style={{ background: editingKey === p.name.toLowerCase() ? "rgba(88,166,255,0.05)" : "transparent" }}>
                   <td style={{ padding: "7px 6px", borderBottom: `1px solid ${C.border}` }}>{p.name}</td>
                   {[p.goals, p.assists, p.yellowCards, p.redCards].map((v, j) => <td key={j} style={{ textAlign: "center", padding: "7px 6px", borderBottom: `1px solid ${C.border}`, color: v > 0 ? C.text : C.muted }}>{v || 0}</td>)}
-                  <td style={{ padding: "7px 4px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-                    <button onClick={() => startEdit(p)} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "12px", padding: "2px 4px" }}>✏️</button>
-                    <button onClick={() => handleDelete(p.name.toLowerCase())} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "12px", padding: "2px 4px" }}>🗑</button>
+                  <td style={{ padding: "4px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
+                    <button onClick={() => startEdit(p)} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "14px", padding: "8px" }}>✏️</button>
+                    <button onClick={() => handleDelete(p.name.toLowerCase())} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }}>🗑</button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>
@@ -749,9 +805,10 @@ function DbuImportTab({ state, dispatch }) {
 
   function applyNewSeason() {
     if (!preview) return;
-    if (!window.confirm("Start en HELT NY sæson? Alle nuværende stemmer, statistik og åbne afstemninger bliver slettet permanent. Overvej at tage en backup først under Backup-fanen.")) return;
-    dispatch({ type: "RESET_SEASON", matches: preview.matches });
-    setMsg({ type: "ok", text: `Ny sæson startet med ${preview.matches.length} kampe. Alt gammelt data er nulstillet.` });
+    if (!window.confirm("Start en HELT NY sæson? Den nuværende sæson arkiveres automatisk (kan ses under Statistik/Rangliste), og alt aktivt data nulstilles.")) return;
+    const label = window.prompt("Navngiv sæsonen der afsluttes (fx 'Efterår 2026'):", `Sæson ${new Date().getFullYear()}`);
+    dispatch({ type: "RESET_SEASON", matches: preview.matches, label });
+    setMsg({ type: "ok", text: `Ny sæson startet med ${preview.matches.length} kampe. Den gamle sæson er arkiveret.` });
     setPreview(null);
     setUrl("");
   }
@@ -1012,7 +1069,18 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", display: "flex", flexDirection: "column", alignItems: "center" }}>
-      <style>{`* { box-sizing:border-box; margin:0; padding:0; } body { background:#0d1117; } input:focus,select:focus,textarea:focus { border-color:#58a6ff !important; box-shadow: 0 0 0 3px rgba(88,166,255,0.1); } select { appearance:none; }`}</style>
+      <style>{`
+        * { box-sizing:border-box; margin:0; padding:0; }
+        body { background:#0d1117; }
+        input:focus,select:focus,textarea:focus { border-color:#58a6ff !important; box-shadow: 0 0 0 3px rgba(88,166,255,0.1); }
+        select { appearance:none; }
+        /* Forhindrer iOS Safari i at zoome ind automatisk, når man trykker i et felt */
+        input, select, textarea { font-size: 16px !important; }
+        button { touch-action: manipulation; }
+        @media (max-width: 480px) {
+          .motm-numgrid { grid-template-columns: 1fr 1fr !important; }
+        }
+      `}</style>
       <div style={{ width: "100%", background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box", flexWrap: "wrap", gap: "8px" }}>
         <div style={{ fontSize: "16px", fontWeight: 700, display: "flex", alignItems: "center", gap: "7px" }}>⚽ ST 70</div>
         <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
