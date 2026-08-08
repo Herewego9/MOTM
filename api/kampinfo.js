@@ -2,10 +2,13 @@
 // Henter og aflæser en DBU "kampinfo"-side (holdopstillinger + målscorere/assists).
 // Kald: /api/kampinfo?url=https://dbu.dk/resultater/kamp/XXXXXX_XXXXXX/kampinfo
 //
-// VIGTIGT: Dette er best-effort scraping af en side, vi ikke selv kontrollerer.
-// Mål/assist-rækkefølgen er baseret på observeret mønster (scorer = normal tekst,
-// assist = lysere/grå tekst, i den rækkefølge de optræder i koden) og bør altid
-// tjekkes af en administrator, før det gemmes som statistik.
+// Parsing-strategi (valideret mod et rigtigt eksempel, 12-04-2026 ST70 4-3 Christiansbjerg):
+// Siden lister begivenheder som en flad rækkefølge af "'<minuttal>" efterfulgt af enten
+// et målikon og 1-2 spillernavne, i skiftende rækkefølge (ikon-før-navne ELLER
+// navne-før-ikon, alt efter hvilket hold der har scoret – hjemmehold har ikonet FØR
+// navnene, udehold har det EFTER). Det første navn i gruppen er altid målscoreren,
+// det andet (hvis det findes) er assist-spilleren. Vi tæller alle "'<tal>"-grupper med
+// et målikon som ét mål, uanset rækkefølgen.
 
 import * as cheerio from "cheerio";
 
@@ -24,48 +27,77 @@ export default async function handler(req, res) {
     const html = await pageRes.text();
     const $ = cheerio.load(html);
 
-    // Holdnavne, fx "ST 70 - Christiansbjerg IF (2)"
+    // ---- Holdnavne, fx "ST 70 - Christiansbjerg IF (2)" ----
     const titleText = $("h1").first().text().trim() || $("title").first().text().trim();
     const parts = titleText.split(" - ").map(s => s.trim()).filter(Boolean);
     const homeTeam = parts[0] || null;
     const awayTeam = parts[1] || null;
 
-    // ---- Holdopstillinger: find tabeller med spillernavne ----
+    // ---- Holdopstillinger (springer "Officials"-tabeller over – de er ikke spillere) ----
     const squads = {};
     $("table").each((_, table) => {
       const headerText = $(table).find("th").first().text().trim();
-      if (!headerText) return;
+      if (!headerText || /^officials?$/i.test(headerText)) return;
       const names = [];
       $(table).find("td").each((_, td) => {
         const t = $(td).text().trim();
-        if (t && t.length > 1 && !/^officials?$/i.test(t)) names.push(t);
+        if (t && t.length > 1) names.push(t);
       });
       if (names.length) squads[headerText] = names;
     });
 
-    // ---- Mål og assists ----
-    // Hver målhændelse markeres af et ikon (icon_sr_goal). Omkring det ligger
-    // typisk to navne: øverste/normal tekst = m\u00e5lscorer, nederste/lysere tekst = assist.
-    const goals = [];
-    $("img[src*='icon_sr_goal']").each((_, icon) => {
-      const eventContainer = $(icon).parent().parent(); // event-r\u00e6kken omkring ikonet
-      const fullText = eventContainer.text();
-      const minuteMatch = fullText.match(/'(\d{1,3})/);
-      const minute = minuteMatch ? minuteMatch[1] : null;
-
-      const names = [];
-      eventContainer.find("a, span, div").each((_, el) => {
-        const t = $(el).text().trim();
-        const hasChildren = $(el).children().length > 0;
-        if (t && t.length > 1 && !hasChildren && !/^'?\d+$/.test(t)) {
-          names.push(t);
+    // ---- Flad token-liste af hele siden, i den rækkefølge indholdet reelt står i HTML'en ----
+    const tokens = [];
+    function walk(el) {
+      $(el).contents().each((_, node) => {
+        if (node.type === "text") {
+          const t = $(node).text().trim();
+          if (t) tokens.push({ type: "text", value: t });
+        } else if (node.type === "tag") {
+          if (node.name === "img") {
+            const src = $(node).attr("src") || "";
+            if (src.includes("icon_sr_goal")) tokens.push({ type: "goal_icon" });
+          } else {
+            walk(node);
+          }
         }
       });
-      const uniqueNames = [...new Set(names)];
-      const scorer = uniqueNames[0] || null;
-      const assist = uniqueNames[1] || null;
-      if (scorer) goals.push({ minute, scorer, assist });
+    }
+    walk("body");
+
+    // ---- Grupér tokens efter minut-markør (fx "'84") ----
+    const events = [];
+    let current = null;
+    tokens.forEach(tok => {
+      if (tok.type === "text" && /^'\d{1,3}$/.test(tok.value)) {
+        if (current) events.push(current);
+        current = { minute: tok.value.replace("'", ""), items: [] };
+      } else if (current) {
+        current.items.push(tok);
+      }
     });
+    if (current) events.push(current);
+
+    // ---- Udtræk mål: kun grupper der indeholder et målikon ----
+    const goals = [];
+    events.forEach(ev => {
+      const iconIndex = ev.items.findIndex(i => i.type === "goal_icon");
+      if (iconIndex === -1) return; // ikke en målhændelse (fx "Kamp start", "1. halvleg slut")
+      const names = ev.items.filter(i => i.type === "text").map(i => i.value);
+      const scorer = names[0] || null;
+      const assist = names[1] || null;
+      let side = "unknown";
+      if (names.length > 0) {
+        const firstNameIndex = ev.items.findIndex(i => i.type === "text");
+        side = iconIndex < firstNameIndex ? "home" : "away";
+      }
+      goals.push({ minute: ev.minute, scorer, assist, side });
+    });
+    goals.sort((a, b) => parseInt(a.minute, 10) - parseInt(b.minute, 10));
+
+    if (!goals.length) {
+      return res.status(422).json({ error: "Fandt ingen mål på siden. Kampen er måske ikke afviklet endnu, eller endte 0-0 (så er der ikke noget at hente)." });
+    }
 
     res.status(200).json({ homeTeam, awayTeam, squads, goals });
   } catch (e) {
