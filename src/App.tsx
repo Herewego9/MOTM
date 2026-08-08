@@ -2,19 +2,24 @@ import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ==== UDFYLD DISSE TO MED DINE EGNE SUPABASE-VÆRDIER (Settings > API) ====
-const SUPABASE_URL = "https://ccvptyouelxzsturthes.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjdnB0eW91ZWx4enN0dXJ0aGVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU5NjIxMzIsImV4cCI6MjEwMTUzODEzMn0.D1MECNG1KLx0FWrM4TemriHSCy303AP438mG_MkpRrc";
+// ==== Supabase-nøgler og admin-kode læses fra miljøvariabler, IKKE fra selve koden ====
+// Sæt disse i Vercel: Settings → Environment Variables (og lokalt i en .env-fil, som
+// aldrig committes til GitHub). Se instruktioner i chatten for hvordan.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // ==========================================================================
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const ADMIN_PASSWORD = "Vinder1";
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
 // Kampdata (stemmer, statistik, m.m.) er DELT mellem alle der bruger appen – ligger i Supabase.
 // "Har jeg stemt"-status er PERSONLIG for denne enhed – ligger i localStorage.
 const SHARED_KEY = "st70-shared";
 const PERSONAL_KEY = "st70-voted-by-me";
 
-const MATCHES = [
+// Kampprogrammet er nu en del af det delte data (kan opdateres fra DBU via Admin → Kampprogram).
+// Dette er standardlisten, som bruges indtil nogen henter et opdateret kampprogram.
+const DEFAULT_MATCHES = [
   { id: 369198, date: "2026-08-16", time: "14:00", home: "ST 70",               away: "VSK Aarhus (1)",         venue: "Trige Søndergård" },
   { id: 369200, date: "2026-08-24", time: "18:30", home: "Christiansbjerg IF (2)", away: "ST 70",               venue: "Christiansbjerg Idrætsanlæg" },
   { id: 369202, date: "2026-09-03", time: "18:40", home: "Lisbjerg FC",           away: "ST 70",                venue: "Lisbjerg Skole" },
@@ -33,6 +38,7 @@ const INIT_SHARED = {
   revealed: {},
   matchStats: {},
   squadNames: [],
+  matches: DEFAULT_MATCHES,
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -186,6 +192,10 @@ function reducer(state, action) {
     }
     case "SET_SQUAD":
       return { ...state, squadNames: action.names };
+    case "SET_MATCHES":
+      // Matches identificeres via deres DBU-kampnummer (id), så eksisterende
+      // stemmer/statistik automatisk følger med, hvis samme kampnummer går igen.
+      return { ...state, matches: action.matches };
     case "IMPORT_STATE":
       return { ...INIT, ...action.state };
     case "RESET":
@@ -200,7 +210,7 @@ function reducer(state, action) {
 // ============================================================
 function VoteView({ state, dispatch }) {
   const { openMatchId, revealed, votedMatches } = state;
-  const match = MATCHES.find(m => m.id === openMatchId);
+  const match = state.matches.find(m => m.id === openMatchId);
   const [playerName, setPlayerName] = useState("");
   const [voterName, setVoterName] = useState("");
   const [err, setErr] = useState("");
@@ -268,7 +278,7 @@ function VoteView({ state, dispatch }) {
 
       <div style={S.card}>
         <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>Kampprogram</div>
-        {MATCHES.map(m => {
+        {state.matches.map(m => {
           const isActive = m.id === openMatchId;
           const done = revealed[m.id];
           return (
@@ -389,7 +399,7 @@ function AdminView({ state, dispatch }) {
     </div>
   );
 
-  const tabs = [{ id: "matches", label: "Kampe" }, { id: "stats", label: "Kampstat." }, { id: "squad", label: "Trup" }, { id: "motm", label: "MOTM" }, { id: "backup", label: "Backup" }];
+  const tabs = [{ id: "matches", label: "Kampe" }, { id: "stats", label: "Kampstat." }, { id: "squad", label: "Trup" }, { id: "motm", label: "MOTM" }, { id: "dbu", label: "Kampprogram" }, { id: "backup", label: "Backup" }];
 
   return (
     <div style={S.card}>
@@ -403,6 +413,7 @@ function AdminView({ state, dispatch }) {
       {tab === "matches" && <MatchesTab state={state} dispatch={dispatch} />}
       {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} />}
       {tab === "squad"   && <SquadTab   state={state} dispatch={dispatch} />}
+      {tab === "dbu"     && <DbuImportTab state={state} dispatch={dispatch} />}
       {tab === "motm"    && <MotmTab    state={state} />}
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
 
@@ -418,7 +429,7 @@ function MatchesTab({ state, dispatch }) {
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}>Åbn afstemning for én kamp ad gangen. Du kan nulstille stemmer uden at miste statistik.</div>
-      {MATCHES.map(m => {
+      {state.matches.map(m => {
         const isOpen = state.openMatchId === m.id;
         const isRevealed = state.revealed[m.id];
         const totalVotes = Object.values(state.votes[m.id] || {}).reduce((a, b) => a + b, 0);
@@ -447,7 +458,7 @@ function MatchesTab({ state, dispatch }) {
 
 // ---- STATS TAB ----
 function StatsTab({ state, dispatch }) {
-  const [selMatch, setSelMatch] = useState(MATCHES[0].id);
+  const [selMatch, setSelMatch] = useState(state.matches[0]?.id);
   const [form, setForm] = useState({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 });
   const [editingKey, setEditingKey] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -476,7 +487,7 @@ function StatsTab({ state, dispatch }) {
     <div>
       <label style={S.label}>Kamp</label>
       <select style={S.input} value={selMatch} onChange={e => { setSelMatch(+e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); }}>
-        {MATCHES.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m)}</option>)}
+        {state.matches.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m)}</option>)}
       </select>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
@@ -542,11 +553,91 @@ function SquadTab({ state, dispatch }) {
   );
 }
 
-// ---- MOTM TAB ----
+// ---- DBU KAMPPROGRAM-IMPORT TAB ----
+function DbuImportTab({ state, dispatch }) {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState(null); // { teamName, competition, matches }
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState(null);
+
+  async function handleFetch() {
+    setErr(""); setMsg(null); setPreview(null);
+    if (!url.trim() || !/dbu\.dk/i.test(url)) { setErr("Indsæt et gyldigt DBU-link (skal indeholde dbu.dk)."); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/kampprogram?url=${encodeURIComponent(url.trim())}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampprogrammet.");
+      if (!data.matches || !data.matches.length) throw new Error("Fandt ingen kampe på siden.");
+      setPreview(data);
+    } catch (e) {
+      setErr(e.message || "Noget gik galt under hentning.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function applyImport() {
+    if (!preview) return;
+    // Behold evt. gamle kampe, der ikke længere findes på DBU (så statistik/historik ikke forsvinder) –
+    // de nye/opdaterede kampe fra DBU er altid den "sande" version.
+    const newIds = new Set(preview.matches.map(m => m.id));
+    const keptOld = state.matches.filter(m => !newIds.has(m.id));
+    const merged = [...preview.matches, ...keptOld].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+    dispatch({ type: "SET_MATCHES", matches: merged });
+    setMsg({ type: "ok", text: `Kampprogram opdateret med ${preview.matches.length} kampe fra DBU.` });
+    setPreview(null);
+    setUrl("");
+  }
+
+  // Sammenlign ny liste med den nuværende for at vise, hvad der reelt ændrer sig.
+  const diff = preview ? (() => {
+    const currentIds = new Set(state.matches.map(m => m.id));
+    const newIds = new Set(preview.matches.map(m => m.id));
+    const added = preview.matches.filter(m => !currentIds.has(m.id));
+    const removed = state.matches.filter(m => !newIds.has(m.id));
+    const changed = preview.matches.filter(m => {
+      const old = state.matches.find(o => o.id === m.id);
+      return old && (old.date !== m.date || old.time !== m.time || old.venue !== m.venue || old.home !== m.home || old.away !== m.away);
+    });
+    return { added, removed, changed };
+  })() : null;
+
+  return (
+    <div>
+      <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
+        Indsæt linket til jeres holds kampprogram på DBU (fx <code style={{ color: C.blue }}>dbu.dk/resultater/hold/DIT-HOLD-ID/kampprogram</code>). Appen henter og opdaterer automatisk kampene – eksisterende stemmer og statistik bevares, fordi de er koblet til DBU's kampnummer.
+      </div>
+
+      {err && <div style={S.err}>{err}</div>}
+      {msg && <div style={S.ok}>{msg.text}</div>}
+
+      <label style={S.label}>DBU kampprogram-link</label>
+      <input style={S.input} placeholder="https://dbu.dk/resultater/hold/.../kampprogram" value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handleFetch()} />
+      <button style={S.btn(loading ? "secondary" : "primary")} onClick={handleFetch} disabled={loading}>{loading ? "Henter…" : "Hent kampprogram"}</button>
+
+      {preview && (
+        <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginTop: "16px" }}>
+          <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "10px" }}>
+            {preview.teamName || "Hold"} {preview.competition ? `· ${preview.competition}` : ""} — {preview.matches.length} kampe fundet
+          </div>
+          {diff.added.length > 0 && <div style={{ fontSize: "12px", color: "#3fb950", marginBottom: "4px" }}>+ {diff.added.length} ny{diff.added.length !== 1 ? "e" : ""} kamp{diff.added.length !== 1 ? "e" : ""}</div>}
+          {diff.changed.length > 0 && <div style={{ fontSize: "12px", color: C.gold, marginBottom: "4px" }}>~ {diff.changed.length} kamp{diff.changed.length !== 1 ? "e" : ""} ændret (dato/tid/spillested)</div>}
+          {diff.removed.length > 0 && <div style={{ fontSize: "12px", color: C.danger, marginBottom: "4px" }}>− {diff.removed.length} kamp{diff.removed.length !== 1 ? "e" : ""} findes ikke længere på DBU (bevares stadig i appen)</div>}
+          {diff.added.length === 0 && diff.changed.length === 0 && diff.removed.length === 0 && <div style={{ fontSize: "12px", color: C.muted, marginBottom: "4px" }}>Ingen ændringer i forhold til det nuværende kampprogram.</div>}
+          <button style={{ ...S.btn("primary"), marginTop: "12px" }} onClick={applyImport}>Anvend kampprogram</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function MotmTab({ state }) {
   return (
     <div>
-      {MATCHES.map(m => {
+      {state.matches.map(m => {
         const matchVotes = state.votes[m.id] || {};
         const total = Object.values(matchVotes).reduce((a, b) => a + b, 0);
         const sorted = Object.entries(matchVotes).sort((a, b) => b[1] - a[1]);
@@ -616,7 +707,7 @@ function BackupTab({ state, dispatch }) {
   }
 
   function exportMatchesCsv() {
-    const rows = MATCHES.map(m => {
+    const rows = state.matches.map(m => {
       const votes = state.votes[m.id] || {};
       const totalVotes = Object.values(votes).reduce((a, b) => a + b, 0);
       const winner = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
@@ -731,7 +822,7 @@ export default function App() {
     return (
       <div style={{ minHeight: "100vh", background: C.bg, color: C.muted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", fontSize: "14px", flexDirection: "column", gap: "10px" }}>
         <div>Forbinder til serveren…</div>
-        {connError && <div style={{ color: "#f85149", fontSize: "12px", maxWidth: "320px", textAlign: "center" }}>Kunne ikke forbinde til Supabase. Tjek at SUPABASE_URL og SUPABASE_ANON_KEY er udfyldt korrekt øverst i koden.</div>}
+        {connError && <div style={{ color: "#f85149", fontSize: "12px", maxWidth: "320px", textAlign: "center" }}>Kunne ikke forbinde til Supabase. Tjek at VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY er sat korrekt under Vercel → Settings → Environment Variables.</div>}
       </div>
     );
   }
