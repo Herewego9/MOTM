@@ -46,7 +46,7 @@ const INIT_PERSONAL = {
 const INIT = { ...INIT_SHARED, ...INIT_PERSONAL };
 
 // Ranglistepoint: MOTM tæller mest, derefter mål, derefter assist.
-const WEIGHTS = { motm: 5, goal: 3, assist: 2 };
+const WEIGHTS = { motm: 5, goal: 3, assist: 2, yellowCard: -1, redCard: -3 };
 
 function deriveSeasonStats(matchStats) {
   const out = {};
@@ -69,7 +69,8 @@ function deriveSeasonStats(matchStats) {
 }
 
 function scorePlayer(p) {
-  return p.motmWins * WEIGHTS.motm + p.goals * WEIGHTS.goal + p.assists * WEIGHTS.assist;
+  return p.motmWins * WEIGHTS.motm + p.goals * WEIGHTS.goal + p.assists * WEIGHTS.assist
+    + (p.yellowCards || 0) * WEIGHTS.yellowCard + (p.redCards || 0) * WEIGHTS.redCard;
 }
 
 const C = {
@@ -359,7 +360,7 @@ function RankingView({ state }) {
       <div style={S.card}>
         <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "4px" }}>🏅 Sæsonens rangliste</div>
         <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px" }}>
-          Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist
+          Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort
         </div>
         {players.map((p, i) => (
           <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
@@ -367,7 +368,7 @@ function RankingView({ state }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: i === 0 ? 700 : 600, fontSize: "14px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
               <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "3px" }}>
-                <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>
+                <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
               </div>
               <div style={{ height: "4px", background: C.border, borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
                 <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#a855f7" : C.muted, borderRadius: "2px" }} />
@@ -468,6 +469,12 @@ function StatsTab({ state, dispatch }) {
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState("");
 
+  const [dbuUrl, setDbuUrl] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchErr, setFetchErr] = useState("");
+  const [suggestion, setSuggestion] = useState(null); // [{minute, scorer, assist}]
+  const [applyMsg, setApplyMsg] = useState(null);
+
   const matchData = state.matchStats[selMatch] || { players: [] };
   const squad = state.squadNames || [];
 
@@ -480,6 +487,46 @@ function StatsTab({ state, dispatch }) {
   }
   function handleDelete(playerKey) { if (window.confirm("Slet spiller fra denne kamp?")) dispatch({ type: "DELETE_PLAYER", matchId: selMatch, playerKey }); }
 
+  async function handleFetchSuggestion() {
+    setFetchErr(""); setSuggestion(null); setApplyMsg(null);
+    if (!dbuUrl.trim() || !/dbu\.dk/i.test(dbuUrl)) { setFetchErr("Indsæt et gyldigt DBU kampinfo-link."); return; }
+    setFetching(true);
+    try {
+      const res = await fetch(`/api/kampinfo?url=${encodeURIComponent(dbuUrl.trim())}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampinfo.");
+      if (!data.goals || !data.goals.length) throw new Error("Fandt ingen mål på siden – kampen er måske ikke afviklet endnu, eller endte 0-0.");
+      setSuggestion(data.goals);
+    } catch (e) {
+      setFetchErr(e.message || "Noget gik galt under hentning.");
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  function swapRow(i) {
+    setSuggestion(prev => prev.map((g, idx) => idx === i ? { ...g, scorer: g.assist, assist: g.scorer } : g));
+  }
+  function removeRow(i) {
+    setSuggestion(prev => prev.filter((_, idx) => idx !== i));
+  }
+
+  function applySuggestion() {
+    if (!suggestion || !suggestion.length) return;
+    const tally = {};
+    suggestion.forEach(g => {
+      if (g.scorer) { tally[g.scorer] = tally[g.scorer] || { name: g.scorer, goals: 0, assists: 0 }; tally[g.scorer].goals += 1; }
+      if (g.assist) { tally[g.assist] = tally[g.assist] || { name: g.assist, goals: 0, assists: 0 }; tally[g.assist].assists += 1; }
+    });
+    Object.values(tally).forEach(player => {
+      const existing = matchData.players.find(p => p.name.toLowerCase() === player.name.toLowerCase());
+      dispatch({ type: "UPSERT_PLAYER", matchId: selMatch, player: { name: player.name, goals: player.goals, assists: player.assists, yellowCards: existing?.yellowCards || 0, redCards: existing?.redCards || 0 } });
+    });
+    setApplyMsg({ type: "ok", text: `${Object.keys(tally).length} spillere opdateret ud fra forslaget. Tjek tabellen nedenfor og ret evt. gule/røde kort manuelt.` });
+    setSuggestion(null);
+    setDbuUrl("");
+  }
+
   const numInput = (key, label) => (
     <div key={key}>
       <label style={S.label}>{label}</label>
@@ -490,9 +537,40 @@ function StatsTab({ state, dispatch }) {
   return (
     <div>
       <label style={S.label}>Kamp</label>
-      <select style={S.input} value={selMatch} onChange={e => { setSelMatch(+e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); }}>
+      <select style={S.input} value={selMatch} onChange={e => { setSelMatch(+e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setSuggestion(null); }}>
         {state.matches.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m)}</option>)}
       </select>
+
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
+        <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Hent mål/assist-forslag fra DBU</div>
+        <div style={{ fontSize: "11px", color: C.muted, marginBottom: "10px", lineHeight: 1.5 }}>Kun til kampe der allerede er afviklet. Dette er et FORSLAG – tjek altid rækkefølgen, før du gemmer. Byt om, hvis scorer/assist står forkert.</div>
+        {fetchErr && <div style={S.err}>{fetchErr}</div>}
+        {applyMsg && <div style={S.ok}>{applyMsg.text}</div>}
+        <input style={S.input} placeholder="https://dbu.dk/resultater/kamp/.../kampinfo" value={dbuUrl} onChange={e => setDbuUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handleFetchSuggestion()} />
+        <button style={S.btn(fetching ? "secondary" : "primary")} onClick={handleFetchSuggestion} disabled={fetching}>{fetching ? "Henter…" : "Hent forslag"}</button>
+
+        {suggestion && (
+          <div style={{ marginTop: "14px" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", marginBottom: "10px" }}>
+              <thead><tr>{["Min.", "Scorer", "Assist", ""].map((h, i) => <th key={i} style={{ textAlign: "left", padding: "5px 6px", color: C.muted, fontSize: "10px", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {suggestion.map((g, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}`, color: C.muted }}>{g.minute ? `'${g.minute}` : "–"}</td>
+                    <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}` }}>{g.scorer || "–"}</td>
+                    <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}`, color: C.muted }}>{g.assist || "–"}</td>
+                    <td style={{ padding: "5px 4px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
+                      {g.assist && <button onClick={() => swapRow(i)} title="Byt scorer og assist om" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "11px", padding: "2px 4px" }}>⇄ byt</button>}
+                      <button onClick={() => removeRow(i)} title="Fjern denne linje" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "11px", padding: "2px 4px" }}>🗑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button style={S.btn("primary", false)} onClick={applySuggestion}>Anvend forslag som statistik</button>
+          </div>
+        )}
+      </div>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>{editingKey ? "Rediger spiller" : "Tilføj spiller"}</div>
@@ -543,13 +621,64 @@ function StatsTab({ state, dispatch }) {
 function SquadTab({ state, dispatch }) {
   const [input, setInput] = useState((state.squadNames || []).join("\n"));
   const [saved, setSaved] = useState(false);
+  const [dbuUrl, setDbuUrl] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchErr, setFetchErr] = useState("");
+  const [fetchResult, setFetchResult] = useState(null); // { homeTeam, awayTeam, squads }
+
   function handleSave() { const names = input.split("\n").map(n => n.trim()).filter(Boolean); dispatch({ type: "SET_SQUAD", names }); setSaved(true); setTimeout(() => setSaved(false), 2000); }
+
+  async function handleFetchSquad() {
+    setFetchErr(""); setFetchResult(null);
+    if (!dbuUrl.trim() || !/dbu\.dk/i.test(dbuUrl)) { setFetchErr("Indsæt et gyldigt DBU kampinfo-link (skal indeholde dbu.dk)."); return; }
+    setFetching(true);
+    try {
+      const res = await fetch(`/api/kampinfo?url=${encodeURIComponent(dbuUrl.trim())}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampinfo.");
+      if (!data.squads || !Object.keys(data.squads).length) throw new Error("Fandt ingen holdopstilling på siden – kampen er måske ikke afviklet endnu.");
+      setFetchResult(data);
+    } catch (e) {
+      setFetchErr(e.message || "Noget gik galt under hentning.");
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  // Tilføjer de hentede navne til den frihånds-tekst, du alligevel kan redigere/rette i, før du gemmer.
+  function addSquadToInput(names) {
+    const existing = input.split("\n").map(n => n.trim()).filter(Boolean);
+    const merged = [...new Set([...existing, ...names])];
+    setInput(merged.join("\n"));
+    setFetchResult(null);
+    setDbuUrl("");
+  }
+
   return (
     <div>
-      <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.6 }}>
-        Indtast spillernavne – ét navn per linje. Når trup er udfyldt, vises en dropdown ved afstemning og statistik i stedet for fritekst.<br />
-        <span style={{ color: C.blue }}>DBU tilbyder endnu ikke et offentligt API til kamptrupper – når/hvis det kommer, kan trup-listen hentes automatisk herfra i stedet.</span>
+      <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
+        Spillertruppen er altid <strong style={{ color: C.text }}>fritekst</strong> nedenfor – du bestemmer selv, om du skriver navne ind i hånden, eller henter dem automatisk fra en DBU kampinfo-side (efter kampen er spillet). Hentede navne tilføjes til listen, du kan altid rette dem bagefter.
       </div>
+
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
+        <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Hent trup fra DBU (valgfrit)</div>
+        {fetchErr && <div style={S.err}>{fetchErr}</div>}
+        <input style={S.input} placeholder="https://dbu.dk/resultater/kamp/.../kampinfo" value={dbuUrl} onChange={e => setDbuUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handleFetchSquad()} />
+        <button style={S.btn(fetching ? "secondary" : "primary")} onClick={handleFetchSquad} disabled={fetching}>{fetching ? "Henter…" : "Hent hold fra kampen"}</button>
+
+        {fetchResult && (
+          <div style={{ marginTop: "14px" }}>
+            {Object.entries(fetchResult.squads).map(([teamName, names]) => (
+              <div key={teamName} style={{ marginBottom: "10px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "6px" }}>{teamName} ({names.length} spillere)</div>
+                <div style={{ fontSize: "11px", color: C.muted, marginBottom: "6px" }}>{names.join(", ")}</div>
+                <button style={S.btn("primary", false)} onClick={() => addSquadToInput(names)}>+ Tilføj {teamName} til listen</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <label style={S.label}>Spillertrup ({(state.squadNames || []).length} spillere)</label>
       <textarea style={{ ...S.input, height: "220px", resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }} placeholder={"Lars Andersen\nMads Jensen\nThomas Nielsen\n..."} value={input} onChange={e => setInput(e.target.value)} />
       <button style={S.btn(saved ? "secondary" : "primary")} onClick={handleSave}>{saved ? "✓ Gemt!" : "Gem trup"}</button>
