@@ -50,7 +50,7 @@ const WEIGHTS = { motm: 5, goal: 3, assist: 2, yellowCard: -1, redCard: -3 };
 
 function deriveSeasonStats(matchStats) {
   const out = {};
-  Object.values(matchStats).forEach(({ players, motmKey }) => {
+  Object.values(matchStats).forEach(({ players, motmKey, motmName }) => {
     (players || []).forEach(p => {
       const k = p.name.toLowerCase();
       if (!out[k]) out[k] = { name: p.name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0 };
@@ -61,7 +61,7 @@ function deriveSeasonStats(matchStats) {
       out[k].redCards    += p.redCards || 0;
     });
     if (motmKey) {
-      if (!out[motmKey]) out[motmKey] = { name: motmKey, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0 };
+      if (!out[motmKey]) out[motmKey] = { name: motmName || motmKey, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0 };
       out[motmKey].motmWins += 1;
     }
   });
@@ -148,9 +148,13 @@ function reducer(state, action) {
       if (state.votedMatches[action.matchId]) return state;
       const prev = state.votes[action.matchId] || {};
       const key = action.player.toLowerCase();
+      // Gemmer det navn, der først blev brugt for denne spiller, så det vises korrekt
+      // (fx "Shahrouz Rafiie"), selvom stemmer altid tælles case-insensitivt internt.
+      const prevEntry = prev[key];
+      const entry = { count: (prevEntry?.count || 0) + 1, name: prevEntry?.name || action.player };
       return {
         ...state,
-        votes: { ...state.votes, [action.matchId]: { ...prev, [key]: (prev[key] || 0) + 1 } },
+        votes: { ...state.votes, [action.matchId]: { ...prev, [key]: entry } },
         votedMatches: { ...state.votedMatches, [action.matchId]: action.player },
       };
     }
@@ -158,10 +162,11 @@ function reducer(state, action) {
       return { ...state, openMatchId: action.matchId };
     case "CLOSE_MATCH": {
       const matchVotes = state.votes[action.matchId] || {};
-      const sorted = Object.entries(matchVotes).sort((a, b) => b[1] - a[1]);
+      const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
       const motmKey = sorted.length > 0 ? sorted[0][0] : null;
+      const motmName = sorted.length > 0 ? sorted[0][1].name : null;
       const prevMatchData = state.matchStats[action.matchId] || { players: [] };
-      return { ...state, openMatchId: null, revealed: { ...state.revealed, [action.matchId]: true }, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey } } };
+      return { ...state, openMatchId: null, revealed: { ...state.revealed, [action.matchId]: true }, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey, motmName } } };
     }
     case "RESET_VOTES": {
       const newVotes = { ...state.votes };
@@ -192,7 +197,7 @@ function reducer(state, action) {
       return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: prevData.players.filter(p => p.name.toLowerCase() !== playerKey) } } };
     }
     case "SET_SQUAD":
-      return { ...state, squadNames: action.names };
+      return { ...state, squadNames: [...action.names].sort((a, b) => a.localeCompare(b, "da")) };
     case "SET_MATCHES":
       // Bruges ved opdatering INDEN FOR samme sæson – fx et tidspunkt der ændres.
       // Stemmer/statistik rører vi ikke, de er koblet til kampens DBU-nummer.
@@ -217,21 +222,20 @@ function VoteView({ state, dispatch }) {
   const { openMatchId, revealed, votedMatches } = state;
   const match = state.matches.find(m => m.id === openMatchId);
   const [playerName, setPlayerName] = useState("");
-  const [voterName, setVoterName] = useState("");
   const [err, setErr] = useState("");
 
-  useEffect(() => { setPlayerName(""); setVoterName(""); setErr(""); }, [openMatchId]);
+  useEffect(() => { setPlayerName(""); setErr(""); }, [openMatchId]);
 
   // Persisteret status – overlever faneskift og genindlæsning af siden.
   const alreadyVotedFor = openMatchId ? votedMatches[openMatchId] : null;
 
   function handleVote() {
-    if (!voterName.trim()) { setErr("Skriv dit eget navn."); return; }
-    if (!playerName.trim()) { setErr("Skriv navnet på kampens spiller."); return; }
+    if (!playerName.trim()) { setErr("Skriv navnet på kampens MVP."); return; }
     dispatch({ type: "VOTE", matchId: openMatchId, player: playerName.trim() });
   }
 
-  const squad = state.squadNames || [];
+  // Spillertruppen vises altid i alfabetisk rækkefølge (ikke statistik-relateret).
+  const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
 
   return (
     <div>
@@ -266,9 +270,7 @@ function VoteView({ state, dispatch }) {
             <div style={S.badge(true)}><span style={S.dot(true)} /> Åben</div>
           </div>
           {err && <div style={S.err}>{err}</div>}
-          <label style={S.label}>Dit navn</label>
-          <input style={S.input} placeholder="Fx Mads Hansen" value={voterName} onChange={e => { setVoterName(e.target.value); setErr(""); }} />
-          <label style={S.label}>Hvem fortjener prisen?</label>
+          <label style={S.label}>Hvem er kampens MVP ⭐?</label>
           {squad.length > 0 ? (
             <select style={S.input} value={playerName} onChange={e => { setPlayerName(e.target.value); setErr(""); }}>
               <option value="">— Vælg spiller —</option>
@@ -437,7 +439,7 @@ function MatchesTab({ state, dispatch }) {
       {state.matches.map(m => {
         const isOpen = state.openMatchId === m.id;
         const isRevealed = state.revealed[m.id];
-        const totalVotes = Object.values(state.votes[m.id] || {}).reduce((a, b) => a + b, 0);
+        const totalVotes = Object.values(state.votes[m.id] || {}).reduce((a, b) => a + b.count, 0);
         const hasStats = (state.matchStats[m.id]?.players?.length || 0) > 0;
         return (
           <div key={m.id} style={{ border: `1px solid ${isOpen ? "rgba(63,185,80,0.4)" : C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px", background: isOpen ? "rgba(35,134,54,0.05)" : "transparent" }}>
@@ -472,11 +474,13 @@ function StatsTab({ state, dispatch }) {
   const [dbuUrl, setDbuUrl] = useState("");
   const [fetching, setFetching] = useState(false);
   const [fetchErr, setFetchErr] = useState("");
-  const [suggestion, setSuggestion] = useState(null); // [{minute, scorer, assist}]
+  const [rawFetch, setRawFetch] = useState(null); // { homeTeam, awayTeam, goals }
+  const [side, setSide] = useState(null); // "home" | "away"
+  const [suggestion, setSuggestion] = useState(null); // [{minute, scorer, assist, side}]
   const [applyMsg, setApplyMsg] = useState(null);
 
   const matchData = state.matchStats[selMatch] || { players: [] };
-  const squad = state.squadNames || [];
+  const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
 
   function startEdit(p) { setForm({ name: p.name, goals: p.goals, assists: p.assists, yellowCards: p.yellowCards, redCards: p.redCards }); setEditingKey(p.name.toLowerCase()); setErr(""); }
   function handleSave() {
@@ -488,21 +492,30 @@ function StatsTab({ state, dispatch }) {
   function handleDelete(playerKey) { if (window.confirm("Slet spiller fra denne kamp?")) dispatch({ type: "DELETE_PLAYER", matchId: selMatch, playerKey }); }
 
   async function handleFetchSuggestion() {
-    setFetchErr(""); setSuggestion(null); setApplyMsg(null);
+    setFetchErr(""); setRawFetch(null); setSuggestion(null); setApplyMsg(null); setSide(null);
     if (!dbuUrl.trim() || !/dbu\.dk/i.test(dbuUrl)) { setFetchErr("Indsæt et gyldigt DBU kampinfo-link."); return; }
     setFetching(true);
     try {
       const res = await fetch(`/api/kampinfo?url=${encodeURIComponent(dbuUrl.trim())}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampinfo.");
-      if (!data.goals || !data.goals.length) throw new Error("Fandt ingen mål på siden – kampen er måske ikke afviklet endnu, eller endte 0-0.");
-      setSuggestion(data.goals);
+      setRawFetch(data);
+      // Gæt hvilket hold der er "vores" ved at se om holdnavnet matcher noget i spillertruppen/kamplisten.
+      const match = state.matches.find(m => m.id === selMatch);
+      const guessHome = match && isHome(match);
+      setSide(guessHome ? "home" : "away");
     } catch (e) {
       setFetchErr(e.message || "Noget gik galt under hentning.");
     } finally {
       setFetching(false);
     }
   }
+
+  // Når man vælger hold, filtreres forslaget til kun det holds mål (+ ukendte, som skal tjekkes manuelt).
+  useEffect(() => {
+    if (!rawFetch || !side) { setSuggestion(null); return; }
+    setSuggestion(rawFetch.goals.filter(g => g.side === side || g.side === "unknown"));
+  }, [rawFetch, side]);
 
   function swapRow(i) {
     setSuggestion(prev => prev.map((g, idx) => idx === i ? { ...g, scorer: g.assist, assist: g.scorer } : g));
@@ -523,7 +536,7 @@ function StatsTab({ state, dispatch }) {
       dispatch({ type: "UPSERT_PLAYER", matchId: selMatch, player: { name: player.name, goals: player.goals, assists: player.assists, yellowCards: existing?.yellowCards || 0, redCards: existing?.redCards || 0 } });
     });
     setApplyMsg({ type: "ok", text: `${Object.keys(tally).length} spillere opdateret ud fra forslaget. Tjek tabellen nedenfor og ret evt. gule/røde kort manuelt.` });
-    setSuggestion(null);
+    setRawFetch(null); setSuggestion(null); setSide(null);
     setDbuUrl("");
   }
 
@@ -549,15 +562,25 @@ function StatsTab({ state, dispatch }) {
         <input style={S.input} placeholder="https://dbu.dk/resultater/kamp/.../kampinfo" value={dbuUrl} onChange={e => setDbuUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handleFetchSuggestion()} />
         <button style={S.btn(fetching ? "secondary" : "primary")} onClick={handleFetchSuggestion} disabled={fetching}>{fetching ? "Henter…" : "Hent forslag"}</button>
 
+        {rawFetch && (
+          <div style={{ marginTop: "14px", marginBottom: "10px" }}>
+            <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Hvilket hold er jeres? (viser kun mål for det valgte hold)</div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button style={{ ...S.btn(side === "home" ? "primary" : "secondary", false) }} onClick={() => setSide("home")}>{rawFetch.homeTeam || "Hjemmehold"}</button>
+              <button style={{ ...S.btn(side === "away" ? "primary" : "secondary", false) }} onClick={() => setSide("away")}>{rawFetch.awayTeam || "Udehold"}</button>
+            </div>
+          </div>
+        )}
+
         {suggestion && (
           <div style={{ marginTop: "14px" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", marginBottom: "10px" }}>
               <thead><tr>{["Min.", "Scorer", "Assist", ""].map((h, i) => <th key={i} style={{ textAlign: "left", padding: "5px 6px", color: C.muted, fontSize: "10px", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}</tr></thead>
               <tbody>
                 {suggestion.map((g, i) => (
-                  <tr key={i}>
+                  <tr key={i} style={g.side === "unknown" ? { background: "rgba(212,160,23,0.06)" } : undefined}>
                     <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}`, color: C.muted }}>{g.minute ? `'${g.minute}` : "–"}</td>
-                    <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}` }}>{g.scorer || "–"}</td>
+                    <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}` }}>{g.scorer || "– (ukendt, tjek selv)"}</td>
                     <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}`, color: C.muted }}>{g.assist || "–"}</td>
                     <td style={{ padding: "5px 4px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
                       {g.assist && <button onClick={() => swapRow(i)} title="Byt scorer og assist om" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "11px", padding: "2px 4px" }}>⇄ byt</button>}
@@ -668,13 +691,16 @@ function SquadTab({ state, dispatch }) {
 
         {fetchResult && (
           <div style={{ marginTop: "14px" }}>
-            {Object.entries(fetchResult.squads).map(([teamName, names]) => (
-              <div key={teamName} style={{ marginBottom: "10px" }}>
-                <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "6px" }}>{teamName} ({names.length} spillere)</div>
-                <div style={{ fontSize: "11px", color: C.muted, marginBottom: "6px" }}>{names.join(", ")}</div>
-                <button style={S.btn("primary", false)} onClick={() => addSquadToInput(names)}>+ Tilføj {teamName} til listen</button>
-              </div>
-            ))}
+            {Object.entries(fetchResult.squads).map(([teamName, names]) => {
+              const sortedNames = [...names].sort((a, b) => a.localeCompare(b, "da"));
+              return (
+                <div key={teamName} style={{ marginBottom: "10px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "6px" }}>{teamName} ({sortedNames.length} spillere)</div>
+                  <div style={{ fontSize: "11px", color: C.muted, marginBottom: "6px" }}>{sortedNames.join(", ")}</div>
+                  <button style={S.btn("primary", false)} onClick={() => addSquadToInput(sortedNames)}>+ Tilføj {teamName} til listen</button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -796,23 +822,23 @@ function MotmTab({ state }) {
     <div>
       {state.matches.map(m => {
         const matchVotes = state.votes[m.id] || {};
-        const total = Object.values(matchVotes).reduce((a, b) => a + b, 0);
-        const sorted = Object.entries(matchVotes).sort((a, b) => b[1] - a[1]);
+        const total = Object.values(matchVotes).reduce((a, b) => a + b.count, 0);
+        const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
         const isRevealed = state.revealed[m.id];
         return (
           <div key={m.id} style={{ border: `1px solid ${C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px" }}>
             <div style={{ fontWeight: 600, fontSize: "13px" }}>{opponent(m)} {isHome(m) ? "(hj)" : "(ude)"}</div>
             <div style={{ fontSize: "11px", color: C.muted, marginBottom: sorted.length ? "10px" : 0 }}>{fmtDate(m.date)} · {total} stemme{total !== 1 ? "r" : ""} · {isRevealed ? <span style={{ color: "#3fb950" }}>Afsluttet</span> : "Ikke afsluttet"}</div>
-            {sorted.map(([name, count], i) => {
-              const pct = total ? Math.round(count / total * 100) : 0;
+            {sorted.map(([key, entry], i) => {
+              const pct = total ? Math.round(entry.count / total * 100) : 0;
               return (
-                <div key={name} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px" }}>
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px" }}>
                   <div style={{ fontSize: "12px", color: i === 0 ? C.gold : C.muted, width: "16px" }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`}</div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "12px", fontWeight: i === 0 ? 700 : 500, textTransform: "capitalize" }}>{name}</div>
+                    <div style={{ fontSize: "12px", fontWeight: i === 0 ? 700 : 500 }}>{entry.name}</div>
                     <div style={{ height: "3px", background: i === 0 ? C.gold : C.border, width: `${pct}%`, borderRadius: "2px", marginTop: "3px" }} />
                   </div>
-                  <div style={{ fontSize: "11px", color: C.muted }}>{count} ({pct}%)</div>
+                  <div style={{ fontSize: "11px", color: C.muted }}>{entry.count} ({pct}%)</div>
                 </div>
               );
             })}
@@ -866,9 +892,9 @@ function BackupTab({ state, dispatch }) {
   function exportMatchesCsv() {
     const rows = state.matches.map(m => {
       const votes = state.votes[m.id] || {};
-      const totalVotes = Object.values(votes).reduce((a, b) => a + b, 0);
-      const winner = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
-      return { Dato: m.date, Modstander: opponent(m), "Hjemme/ude": isHome(m) ? "Hjemme" : "Ude", "Kampens spiller": winner ? winner[0] : "", Stemmer: totalVotes };
+      const totalVotes = Object.values(votes).reduce((a, b) => a + b.count, 0);
+      const winner = Object.entries(votes).sort((a, b) => b[1].count - a[1].count)[0];
+      return { Dato: m.date, Modstander: opponent(m), "Hjemme/ude": isHome(m) ? "Hjemme" : "Ude", "Kampens spiller": winner ? winner[1].name : "", Stemmer: totalVotes };
     });
     downloadBlob(toCsv(rows), "st70-kampe.csv", "text/csv;charset=utf-8;");
     setMsg({ type: "ok", text: "Kampresultater downloadet som CSV." });
