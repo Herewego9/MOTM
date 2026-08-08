@@ -25,6 +25,7 @@ const INIT_SHARED = {
   squadNames: [],
   matches: [], // Tomt som udgangspunkt – hentes ind via Admin → Kampprogram (DBU-link)
   seasonHistory: [], // Arkiverede, afsluttede sæsoner (se ARCHIVE ved RESET/RESET_SEASON)
+  laundryHistory: [], // Hvem har haft spilletøjet med hjem til vask, og hvornår
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -138,7 +139,27 @@ function archiveCurrentSeason(state, label) {
     matchStats: state.matchStats,
     revealed: state.revealed,
   };
-  return [...(state.seasonHistory || []), snapshot];
+  const combined = [...(state.seasonHistory || []), snapshot];
+  // Gem højst de 2 seneste sæsoner (= ét år, da der er 2 sæsoner pr. år) – ældre slettes automatisk.
+  return combined.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt)).slice(0, 2);
+}
+
+// Beregner hvem der stadig mangler at have vasketøjet med i den aktuelle "runde".
+// Går baglæns gennem historikken og samler navne op, indtil enten hele truppen er
+// dækket (en runde er lige afsluttet), eller et navn går igen (vi er passeret
+// grænsen til en tidligere runde). Er alle allerede dækket, starter en ny runde
+// automatisk, og hele truppen er igen med i lodtrækningen.
+function computeLaundryPool(squadNames, laundryHistory) {
+  if (!squadNames || !squadNames.length) return [];
+  const sorted = [...(laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const recent = new Set();
+  for (const entry of sorted) {
+    if (recent.has(entry.name)) break; // ramt en tidligere runde – stop her
+    recent.add(entry.name);
+    if (recent.size >= squadNames.length) break; // hele truppen er lige dækket
+  }
+  const pool = squadNames.filter(n => !recent.has(n));
+  return pool.length ? pool : squadNames; // alle har haft en tur → ny runde starter
 }
 
 // ============================================================
@@ -212,6 +233,12 @@ function reducer(state, action) {
       const archive = archiveCurrentSeason(state, action.label);
       return { ...state, matches: action.matches, votes: {}, revealed: {}, matchStats: {}, openMatchId: null, seasonHistory: archive };
     }
+    case "DELETE_SEASON":
+      return { ...state, seasonHistory: (state.seasonHistory || []).filter(s => String(s.id) !== String(action.id)) };
+    case "ASSIGN_LAUNDRY":
+      return { ...state, laundryHistory: [...(state.laundryHistory || []), { id: Date.now(), name: action.name, date: new Date().toISOString() }] };
+    case "DELETE_LAUNDRY_ENTRY":
+      return { ...state, laundryHistory: (state.laundryHistory || []).filter(e => String(e.id) !== String(action.id)) };
     case "IMPORT_STATE":
       return { ...INIT, ...action.state };
     case "RESET": {
@@ -448,7 +475,7 @@ function AdminView({ state, dispatch }) {
     </div>
   );
 
-  const tabs = [{ id: "matches", label: "Kampe" }, { id: "stats", label: "Kampstat." }, { id: "squad", label: "Trup" }, { id: "motm", label: "MOTM" }, { id: "dbu", label: "Kampprogram" }, { id: "backup", label: "Backup" }];
+  const tabs = [{ id: "matches", label: "Kampe" }, { id: "stats", label: "Kampstat." }, { id: "squad", label: "Trup" }, { id: "motm", label: "MOTM" }, { id: "dbu", label: "Kampprogram" }, { id: "laundry", label: "Vasketøj" }, { id: "backup", label: "Backup" }];
 
   return (
     <div style={S.card}>
@@ -463,6 +490,7 @@ function AdminView({ state, dispatch }) {
       {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} />}
       {tab === "squad"   && <SquadTab   state={state} dispatch={dispatch} />}
       {tab === "dbu"     && <DbuImportTab state={state} dispatch={dispatch} />}
+      {tab === "laundry" && <LaundryTab state={state} dispatch={dispatch} />}
       {tab === "motm"    && <MotmTab    state={state} />}
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
 
@@ -907,6 +935,84 @@ function MotmTab({ state }) {
 }
 
 // ---- BACKUP TAB (Excel-eksport, JSON-backup/-import) ----
+// ---- VASKETØJ TAB ----
+function LaundryTab({ state, dispatch }) {
+  const [candidate, setCandidate] = useState(null);
+  const [msg, setMsg] = useState(null);
+
+  const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
+  const pool = computeLaundryPool(squad, state.laundryHistory);
+  const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
+
+  function rollRandom() {
+    setMsg(null);
+    if (!pool.length) return;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    setCandidate(pick);
+  }
+
+  function confirmAssign() {
+    if (!candidate) return;
+    dispatch({ type: "ASSIGN_LAUNDRY", name: candidate });
+    setMsg({ type: "ok", text: `${candidate} er registreret som denne omgangs vasketøjs-ansvarlig.` });
+    setCandidate(null);
+  }
+
+  function deleteEntry(id) {
+    if (window.confirm("Slet denne registrering? (Bruges hvis der er sket en fejl)")) dispatch({ type: "DELETE_LAUNDRY_ENTRY", id });
+  }
+
+  if (!squad.length) {
+    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Udfyld spillertruppen under fanen "Trup" først.</div></div>;
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
+        Trækker tilfældigt en spiller til at tage spilletøjet med hjem til vask. Alle i truppen skal have haft en tur, før nogen kan blive trukket igen – så starter en ny runde automatisk.
+      </div>
+
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "16px" }}>
+        <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>
+          {pool.length} af {squad.length} er stadig med i denne runde
+        </div>
+
+        {msg && <div style={S.ok}>{msg.text}</div>}
+
+        {candidate ? (
+          <div style={{ textAlign: "center", padding: "16px 0" }}>
+            <div style={{ fontSize: "13px", color: C.muted, marginBottom: "6px" }}>🎲 Trukket:</div>
+            <div style={{ fontSize: "22px", fontWeight: 800, color: C.gold, marginBottom: "16px" }}>{candidate}</div>
+            <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+              <button style={S.btn("primary", false)} onClick={confirmAssign}>✓ Bekræft</button>
+              <button style={S.btn("secondary", false)} onClick={rollRandom}>🎲 Træk igen</button>
+            </div>
+          </div>
+        ) : (
+          <button style={S.btn("primary")} onClick={rollRandom}>🎲 Træk tilfældig spiller</button>
+        )}
+      </div>
+
+      <div>
+        <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Historik</div>
+        {history.length === 0 ? (
+          <div style={{ fontSize: "13px", color: C.muted }}>Ingen registreringer endnu.</div>
+        ) : (
+          history.map(e => (
+            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", borderRadius: "7px", border: `1px solid ${C.border}`, marginBottom: "6px" }}>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 600 }}>{e.name}</div>
+                <div style={{ fontSize: "11px", color: C.muted }}>{fmtDanishTime(e.date)}</div>
+              </div>
+              <button onClick={() => deleteEntry(e.id)} title="Slet (fejlregistrering)" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }}>🗑</button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function BackupTab({ state, dispatch }) {
   const [msg, setMsg] = useState(null); // { type: "ok"|"err", text }
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -996,6 +1102,28 @@ function BackupTab({ state, dispatch }) {
           <button style={{ ...S.btn("secondary", false) }} onClick={exportJson}>💾 Download backup.json</button>
         </div>
         <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>CSV-filer åbnes direkte i Excel, Numbers eller Google Sheets.</div>
+      </div>
+
+      <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
+        <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Arkiverede sæsoner ({(state.seasonHistory || []).length}/2)</div>
+        {(!state.seasonHistory || state.seasonHistory.length === 0) ? (
+          <div style={{ fontSize: "12px", color: C.muted }}>Ingen arkiverede sæsoner endnu.</div>
+        ) : (
+          [...state.seasonHistory].sort((a, b) => b.archivedAt.localeCompare(a.archivedAt)).map(s => (
+            <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 600 }}>{s.label}</div>
+                <div style={{ fontSize: "11px", color: C.muted }}>Arkiveret {fmtDanishTime(s.archivedAt)}</div>
+              </div>
+              <button
+                title="Slet denne sæson permanent"
+                style={{ ...S.btn("danger", false), fontSize: "11px" }}
+                onClick={() => { if (window.confirm(`Slet sæsonen "${s.label}" permanent? Kan ikke fortrydes.`)) dispatch({ type: "DELETE_SEASON", id: s.id }); }}
+              >🗑 Slet</button>
+            </div>
+          ))
+        )}
+        <div style={{ fontSize: "11px", color: C.muted, marginTop: "10px" }}>Der gemmes automatisk højst de 2 seneste sæsoner (= ét år). Ældre slettes automatisk, når en ny arkiveres.</div>
       </div>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px" }}>
