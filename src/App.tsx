@@ -193,9 +193,13 @@ function reducer(state, action) {
     case "SET_SQUAD":
       return { ...state, squadNames: action.names };
     case "SET_MATCHES":
-      // Matches identificeres via deres DBU-kampnummer (id), så eksisterende
-      // stemmer/statistik automatisk følger med, hvis samme kampnummer går igen.
+      // Bruges ved opdatering INDEN FOR samme sæson – fx et tidspunkt der ændres.
+      // Stemmer/statistik rører vi ikke, de er koblet til kampens DBU-nummer.
       return { ...state, matches: action.matches };
+    case "RESET_SEASON":
+      // Bruges ved en HELT NY sæson – nyt kampprogram, og alt gammelt data
+      // (stemmer, statistik, åben afstemning) nulstilles bevidst.
+      return { ...state, matches: action.matches, votes: {}, revealed: {}, matchStats: {}, openMatchId: null };
     case "IMPORT_STATE":
       return { ...INIT, ...action.state };
     case "RESET":
@@ -580,34 +584,43 @@ function DbuImportTab({ state, dispatch }) {
 
   function applyImport() {
     if (!preview) return;
-    // Behold evt. gamle kampe, der ikke længere findes på DBU (så statistik/historik ikke forsvinder) –
-    // de nye/opdaterede kampe fra DBU er altid den "sande" version.
-    const newIds = new Set(preview.matches.map(m => m.id));
-    const keptOld = state.matches.filter(m => !newIds.has(m.id));
-    const merged = [...preview.matches, ...keptOld].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-    dispatch({ type: "SET_MATCHES", matches: merged });
-    setMsg({ type: "ok", text: `Kampprogram opdateret med ${preview.matches.length} kampe fra DBU.` });
+    // Samme sæson: kampene fra DBU er den "sande" version. Stemmer/statistik rører
+    // vi ikke – de er koblet til DBU's kampnummer og forbliver derfor korrekte.
+    dispatch({ type: "SET_MATCHES", matches: preview.matches });
+    setMsg({ type: "ok", text: `Kampprogram opdateret med ${preview.matches.length} kampe. Stemmer og statistik er bevaret.` });
     setPreview(null);
     setUrl("");
   }
 
-  // Sammenlign ny liste med den nuværende for at vise, hvad der reelt ændrer sig.
+  function applyNewSeason() {
+    if (!preview) return;
+    if (!window.confirm("Start en HELT NY sæson? Alle nuværende stemmer, statistik og åbne afstemninger bliver slettet permanent. Overvej at tage en backup først under Backup-fanen.")) return;
+    dispatch({ type: "RESET_SEASON", matches: preview.matches });
+    setMsg({ type: "ok", text: `Ny sæson startet med ${preview.matches.length} kampe. Alt gammelt data er nulstillet.` });
+    setPreview(null);
+    setUrl("");
+  }
+
+  // Sammenlign ny liste med den nuværende for at vise, hvad der reelt ændrer sig,
+  // og for at vurdere om det ligner samme sæson eller en helt ny.
   const diff = preview ? (() => {
     const currentIds = new Set(state.matches.map(m => m.id));
     const newIds = new Set(preview.matches.map(m => m.id));
     const added = preview.matches.filter(m => !currentIds.has(m.id));
     const removed = state.matches.filter(m => !newIds.has(m.id));
-    const changed = preview.matches.filter(m => {
+    const overlap = preview.matches.filter(m => currentIds.has(m.id));
+    const changed = overlap.filter(m => {
       const old = state.matches.find(o => o.id === m.id);
       return old && (old.date !== m.date || old.time !== m.time || old.venue !== m.venue || old.home !== m.home || old.away !== m.away);
     });
-    return { added, removed, changed };
+    const looksLikeNewSeason = overlap.length === 0 && state.matches.length > 0;
+    return { added, removed, changed, overlap, looksLikeNewSeason };
   })() : null;
 
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
-        Indsæt linket til jeres holds kampprogram på DBU (fx <code style={{ color: C.blue }}>dbu.dk/resultater/hold/DIT-HOLD-ID/kampprogram</code>). Appen henter og opdaterer automatisk kampene – eksisterende stemmer og statistik bevares, fordi de er koblet til DBU's kampnummer.
+        Indsæt linket til jeres holds kampprogram på DBU (fx <code style={{ color: C.blue }}>dbu.dk/resultater/hold/DIT-HOLD-ID/kampprogram</code>). Er det <strong style={{ color: C.text }}>samme sæson</strong> (fx en kamp der flytter tidspunkt), bevares al statistik. Er det en <strong style={{ color: C.text }}>helt ny sæson</strong>, kan du vælge at nulstille alt.
       </div>
 
       {err && <div style={S.err}>{err}</div>}
@@ -622,11 +635,26 @@ function DbuImportTab({ state, dispatch }) {
           <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "10px" }}>
             {preview.teamName || "Hold"} {preview.competition ? `· ${preview.competition}` : ""} — {preview.matches.length} kampe fundet
           </div>
-          {diff.added.length > 0 && <div style={{ fontSize: "12px", color: "#3fb950", marginBottom: "4px" }}>+ {diff.added.length} ny{diff.added.length !== 1 ? "e" : ""} kamp{diff.added.length !== 1 ? "e" : ""}</div>}
-          {diff.changed.length > 0 && <div style={{ fontSize: "12px", color: C.gold, marginBottom: "4px" }}>~ {diff.changed.length} kamp{diff.changed.length !== 1 ? "e" : ""} ændret (dato/tid/spillested)</div>}
-          {diff.removed.length > 0 && <div style={{ fontSize: "12px", color: C.danger, marginBottom: "4px" }}>− {diff.removed.length} kamp{diff.removed.length !== 1 ? "e" : ""} findes ikke længere på DBU (bevares stadig i appen)</div>}
-          {diff.added.length === 0 && diff.changed.length === 0 && diff.removed.length === 0 && <div style={{ fontSize: "12px", color: C.muted, marginBottom: "4px" }}>Ingen ændringer i forhold til det nuværende kampprogram.</div>}
-          <button style={{ ...S.btn("primary"), marginTop: "12px" }} onClick={applyImport}>Anvend kampprogram</button>
+
+          {diff.looksLikeNewSeason ? (
+            <div style={{ fontSize: "12px", color: C.gold, marginBottom: "10px", background: "rgba(212,160,23,0.08)", border: "1px solid rgba(212,160,23,0.25)", borderRadius: "6px", padding: "10px 12px" }}>
+              ⚠️ Ingen af de {preview.matches.length} nye kampe matcher jeres nuværende kampprogram – dette ligner en <strong>ny sæson</strong>.
+            </div>
+          ) : (
+            <>
+              {diff.added.length > 0 && <div style={{ fontSize: "12px", color: "#3fb950", marginBottom: "4px" }}>+ {diff.added.length} ny{diff.added.length !== 1 ? "e" : ""} kamp{diff.added.length !== 1 ? "e" : ""}</div>}
+              {diff.changed.length > 0 && <div style={{ fontSize: "12px", color: C.gold, marginBottom: "4px" }}>~ {diff.changed.length} kamp{diff.changed.length !== 1 ? "e" : ""} ændret (dato/tid/spillested)</div>}
+              {diff.removed.length > 0 && <div style={{ fontSize: "12px", color: C.danger, marginBottom: "4px" }}>− {diff.removed.length} kamp{diff.removed.length !== 1 ? "e" : ""} findes ikke længere på DBU</div>}
+              {diff.added.length === 0 && diff.changed.length === 0 && diff.removed.length === 0 && <div style={{ fontSize: "12px", color: C.muted, marginBottom: "4px" }}>Ingen ændringer i forhold til det nuværende kampprogram.</div>}
+            </>
+          )}
+
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px" }}>
+            {!diff.looksLikeNewSeason && (
+              <button style={S.btn("primary", false)} onClick={applyImport}>Opdatér kampprogram (behold statistik)</button>
+            )}
+            <button style={S.btn("danger", false)} onClick={applyNewSeason}>🗑 Dette er en ny sæson – nulstil alt</button>
+          </div>
         </div>
       )}
     </div>
