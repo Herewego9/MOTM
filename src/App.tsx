@@ -488,7 +488,7 @@ function AdminView({ state, dispatch }) {
       <div style={{ fontSize: "18px", fontWeight: 700, marginBottom: "14px" }}>Admin-panel</div>
       <div style={{ display: "flex", gap: "5px", marginBottom: "18px", borderBottom: `1px solid ${C.border}`, paddingBottom: "14px", flexWrap: "wrap" }}>
         {tabs.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? C.border : "transparent", color: tab === t.id ? C.text : C.muted, border: `1px solid ${tab === t.id ? C.border : "transparent"}`, borderRadius: "6px", padding: "6px 13px", cursor: "pointer", fontSize: "12px", fontWeight: 500 }}>{t.label}</button>
+          <button key={t.id} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? C.border : "transparent", color: tab === t.id ? C.text : C.muted, border: `1px solid ${tab === t.id ? C.accent : "transparent"}`, borderRadius: "6px", padding: "6px 13px", cursor: "pointer", fontSize: "12px", fontWeight: 500 }}>{t.label}</button>
         ))}
       </div>
 
@@ -832,15 +832,28 @@ function SquadTab({ state, dispatch }) {
 }
 
 // ---- DBU KAMPPROGRAM-IMPORT TAB ----
+// Regner ud hvilket hold der er "vores": det eneste hold, der optræder i ALLE
+// kampe (modstanderen skifter jo hver gang, men jeres eget hold går igen hver gang).
+function detectOwnTeam(matches) {
+  const counts = {};
+  matches.forEach(m => {
+    counts[m.home] = (counts[m.home] || 0) + 1;
+    counts[m.away] = (counts[m.away] || 0) + 1;
+  });
+  const constant = Object.entries(counts).find(([, count]) => count === matches.length);
+  return constant ? constant[0] : null;
+}
+
 function DbuImportTab({ state, dispatch }) {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null); // { teamName, competition, matches }
+  const [selectedTeam, setSelectedTeam] = useState("");
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState(null);
 
   async function handleFetch() {
-    setErr(""); setMsg(null); setPreview(null);
+    setErr(""); setMsg(null); setPreview(null); setSelectedTeam("");
     if (!url.trim() || !/dbu\.dk/i.test(url)) { setErr("Indsæt et gyldigt DBU-link (skal indeholde dbu.dk)."); return; }
     setLoading(true);
     try {
@@ -849,6 +862,7 @@ function DbuImportTab({ state, dispatch }) {
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampprogrammet.");
       if (!data.matches || !data.matches.length) throw new Error("Fandt ingen kampe på siden.");
       setPreview(data);
+      setSelectedTeam(detectOwnTeam(data.matches) || "");
     } catch (e) {
       setErr(e.message || "Noget gik galt under hentning.");
     } finally {
@@ -856,21 +870,24 @@ function DbuImportTab({ state, dispatch }) {
     }
   }
 
+  // Alle holdnavne der optræder i kampene – bruges som valgmuligheder, hvis auto-genkendelsen skal rettes.
+  const teamOptions = preview ? [...new Set(preview.matches.flatMap(m => [m.home, m.away]))].sort((a, b) => a.localeCompare(b, "da")) : [];
+
   function applyImport() {
-    if (!preview) return;
+    if (!preview || !selectedTeam) return;
     // Samme sæson: kampene fra DBU er den "sande" version. Stemmer/statistik rører
     // vi ikke – de er koblet til DBU's kampnummer og forbliver derfor korrekte.
-    dispatch({ type: "SET_MATCHES", matches: preview.matches, teamName: preview.teamName, competition: preview.competition });
+    dispatch({ type: "SET_MATCHES", matches: preview.matches, teamName: selectedTeam, competition: preview.competition });
     setMsg({ type: "ok", text: `Kampprogram opdateret med ${preview.matches.length} kampe. Stemmer og statistik er bevaret.` });
     setPreview(null);
     setUrl("");
   }
 
   function applyNewSeason() {
-    if (!preview) return;
+    if (!preview || !selectedTeam) return;
     if (!window.confirm("Start en HELT NY sæson? Den nuværende sæson arkiveres automatisk (kan ses under Statistik/Rangliste), og alt aktivt data nulstilles.")) return;
     const label = window.prompt("Navngiv sæsonen der afsluttes (fx 'Efterår 2026'):", `Sæson ${new Date().getFullYear()}`);
-    dispatch({ type: "RESET_SEASON", matches: preview.matches, label, teamName: preview.teamName, competition: preview.competition });
+    dispatch({ type: "RESET_SEASON", matches: preview.matches, label, teamName: selectedTeam, competition: preview.competition });
     setMsg({ type: "ok", text: `Ny sæson startet med ${preview.matches.length} kampe. Den gamle sæson er arkiveret.` });
     setPreview(null);
     setUrl("");
@@ -908,8 +925,15 @@ function DbuImportTab({ state, dispatch }) {
       {preview && (
         <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginTop: "16px" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "10px" }}>
-            {preview.teamName || "Hold"} {preview.competition ? `· ${preview.competition}` : ""} — {preview.matches.length} kampe fundet
+            {preview.competition ? preview.competition : "Kampprogram"} — {preview.matches.length} kampe fundet
           </div>
+
+          <label style={S.label}>Jeres hold</label>
+          <select style={S.input} value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)}>
+            <option value="">— Vælg jeres hold —</option>
+            {teamOptions.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          {!selectedTeam && <div style={{ ...S.err, marginTop: "-6px" }}>Vælg jeres hold, før kampprogrammet kan anvendes – det afgør hvornår I spiller hjemme/ude.</div>}
 
           {diff.looksLikeNewSeason ? (
             <div style={{ fontSize: "12px", color: C.gold, marginBottom: "10px", background: "rgba(212,160,23,0.08)", border: "1px solid rgba(212,160,23,0.25)", borderRadius: "6px", padding: "10px 12px" }}>
@@ -926,9 +950,9 @@ function DbuImportTab({ state, dispatch }) {
 
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px" }}>
             {!diff.looksLikeNewSeason && (
-              <button style={S.btn("primary", false)} onClick={applyImport}>Opdatér kampprogram (behold statistik)</button>
+              <button style={S.btn("primary", false)} onClick={applyImport} disabled={!selectedTeam}>Opdatér kampprogram (behold statistik)</button>
             )}
-            <button style={S.btn("danger", false)} onClick={applyNewSeason}>🗑 Dette er en ny sæson – nulstil alt</button>
+            <button style={S.btn("danger", false)} onClick={applyNewSeason} disabled={!selectedTeam}>🗑 Dette er en ny sæson – nulstil alt</button>
           </div>
         </div>
       )}
@@ -1233,7 +1257,7 @@ export default function App() {
 
   const navBtn = (v) => ({
     background: view === v ? C.border : "transparent", color: view === v ? C.text : C.muted,
-    border: `1px solid ${view === v ? C.border : "transparent"}`, borderRadius: "6px",
+    border: `1px solid ${view === v ? C.accent : "transparent"}`, borderRadius: "6px",
     padding: "6px 13px", cursor: "pointer", fontSize: "12px", fontWeight: 500,
   });
 
@@ -1260,8 +1284,7 @@ export default function App() {
           .motm-numgrid { grid-template-columns: 1fr 1fr !important; }
         }
       `}</style>
-      <div style={{ width: "100%", background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box", flexWrap: "wrap", gap: "8px" }}>
-        <div style={{ fontSize: "16px", fontWeight: 700, display: "flex", alignItems: "center", gap: "7px" }}>⚽ {state.teamName || "Kampens Spiller"}</div>
+      <div style={{ width: "100%", background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 18px", display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box", flexWrap: "wrap", gap: "8px" }}>
         <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
           <button style={navBtn("vote")} onClick={() => setView("vote")}>Stem</button>
           <button style={navBtn("ranking")} onClick={() => setView("ranking")}>Rangliste</button>
