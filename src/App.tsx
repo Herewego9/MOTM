@@ -236,7 +236,7 @@ function reducer(state, action) {
     case "DELETE_SEASON":
       return { ...state, seasonHistory: (state.seasonHistory || []).filter(s => String(s.id) !== String(action.id)) };
     case "ASSIGN_LAUNDRY":
-      return { ...state, laundryHistory: [...(state.laundryHistory || []), { id: Date.now(), name: action.name, date: new Date().toISOString() }] };
+      return { ...state, laundryHistory: [...(state.laundryHistory || []), { id: Date.now(), name: action.name, date: new Date().toISOString(), matchId: action.matchId || null, matchLabel: action.matchLabel || null }] };
     case "DELETE_LAUNDRY_ENTRY":
       return { ...state, laundryHistory: (state.laundryHistory || []).filter(e => String(e.id) !== String(action.id)) };
     case "IMPORT_STATE":
@@ -475,7 +475,7 @@ function AdminView({ state, dispatch }) {
     </div>
   );
 
-  const tabs = [{ id: "matches", label: "Kampe" }, { id: "stats", label: "Kampstat." }, { id: "squad", label: "Trup" }, { id: "motm", label: "MOTM" }, { id: "dbu", label: "Kampprogram" }, { id: "laundry", label: "Vasketøj" }, { id: "backup", label: "Backup" }];
+  const tabs = [{ id: "matches", label: "Kampe" }, { id: "stats", label: "Kampstat." }, { id: "squad", label: "Trup" }, { id: "laundry", label: "Vasketøj" }, { id: "backup", label: "Backup" }];
 
   return (
     <div style={S.card}>
@@ -489,9 +489,7 @@ function AdminView({ state, dispatch }) {
       {tab === "matches" && <MatchesTab state={state} dispatch={dispatch} />}
       {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} />}
       {tab === "squad"   && <SquadTab   state={state} dispatch={dispatch} />}
-      {tab === "dbu"     && <DbuImportTab state={state} dispatch={dispatch} />}
       {tab === "laundry" && <LaundryTab state={state} dispatch={dispatch} />}
-      {tab === "motm"    && <MotmTab    state={state} />}
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
 
       <div style={{ marginTop: "22px", paddingTop: "14px", borderTop: `1px solid ${C.border}` }}>
@@ -507,17 +505,44 @@ function AdminView({ state, dispatch }) {
 
 // ---- MATCHES TAB ----
 function MatchesTab({ state, dispatch }) {
+  const [dbuOpen, setDbuOpen] = useState(false);
+  const [expandedVotes, setExpandedVotes] = useState(() => new Set());
+
+  function toggleVotes(id) {
+    setExpandedVotes(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
   return (
     <div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: "9px", marginBottom: "16px", overflow: "hidden" }}>
+        <button
+          onClick={() => setDbuOpen(o => !o)}
+          style={{ width: "100%", textAlign: "left", background: C.bg, border: "none", cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", color: C.text, fontSize: "13px", fontWeight: 600 }}
+        >
+          <span>⚽ Hent/opdatér kampprogram fra DBU</span>
+          <span style={{ color: C.muted, fontSize: "12px" }}>{dbuOpen ? "▲ Skjul" : "▼ Vis"}</span>
+        </button>
+        {dbuOpen && (
+          <div style={{ padding: "14px", borderTop: `1px solid ${C.border}` }}>
+            <DbuImportTab state={state} dispatch={dispatch} />
+          </div>
+        )}
+      </div>
+
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}>Åbn afstemning for én kamp ad gangen. Du kan nulstille stemmer uden at miste statistik.</div>
       {state.matches.length === 0 && (
-        <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Gå til fanen "Kampprogram" for at hente det fra DBU.</div>
+        <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Brug boksen ovenfor til at hente det fra DBU.</div>
       )}
       {state.matches.map(m => {
         const isOpen = state.openMatchId === m.id;
         const isRevealed = state.revealed[m.id];
         const totalVotes = Object.values(state.votes[m.id] || {}).reduce((a, b) => a + b.count, 0);
         const hasStats = (state.matchStats[m.id]?.players?.length || 0) > 0;
+        const votesExpanded = expandedVotes.has(m.id);
         return (
           <div key={m.id} style={{ border: `1px solid ${isOpen ? "rgba(63,185,80,0.4)" : C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px", background: isOpen ? "rgba(35,134,54,0.05)" : "transparent" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", flexWrap: "wrap" }}>
@@ -529,10 +554,14 @@ function MatchesTab({ state, dispatch }) {
                 {!isOpen && !isRevealed && <button style={S.btn("primary", false)} onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}>Åbn</button>}
                 {isOpen && <button style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
                 {isRevealed && <span style={{ fontSize: "11px", color: "#3fb950" }}>✓ Afsluttet</span>}
+                {totalVotes > 0 && (
+                  <button onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
+                )}
                 <button title="Nulstil afstemning – sletter kun stemmer, bevarer statistik" style={{ ...S.btn("warn", false), fontSize: "11px" }} onClick={() => { if (window.confirm("Nulstil stemmer for denne kamp? Statistik bevares.")) dispatch({ type: "RESET_VOTES", matchId: m.id }); }}>🔄 Nulstil afstemning</button>
                 <button title="Nulstil hele kampen – sletter stemmer, statistik og resultat" style={{ ...S.btn("danger", false), fontSize: "11px" }} onClick={() => { if (window.confirm("Nulstil HELE kampen? Stemmer, statistik og resultat slettes.")) dispatch({ type: "RESET_MATCH", matchId: m.id }); }}>🗑 Nulstil kamp</button>
               </div>
             </div>
+            {votesExpanded && <MatchVotesBreakdown state={state} matchId={m.id} />}
           </div>
         );
       })}
@@ -902,31 +931,24 @@ function DbuImportTab({ state, dispatch }) {
 }
 
 
-function MotmTab({ state }) {
+// Genbrugelig stemmefordeling for én kamp (bruges inline i Kampe-fanen)
+function MatchVotesBreakdown({ state, matchId }) {
+  const matchVotes = state.votes[matchId] || {};
+  const total = Object.values(matchVotes).reduce((a, b) => a + b.count, 0);
+  const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
+  if (!sorted.length) return <div style={{ fontSize: "12px", color: C.muted, padding: "8px 0" }}>Ingen stemmer endnu.</div>;
   return (
-    <div>
-      {state.matches.map(m => {
-        const matchVotes = state.votes[m.id] || {};
-        const total = Object.values(matchVotes).reduce((a, b) => a + b.count, 0);
-        const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
-        const isRevealed = state.revealed[m.id];
+    <div style={{ paddingTop: "10px" }}>
+      {sorted.map(([key, entry], i) => {
+        const pct = total ? Math.round(entry.count / total * 100) : 0;
         return (
-          <div key={m.id} style={{ border: `1px solid ${C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px" }}>
-            <div style={{ fontWeight: 600, fontSize: "13px" }}>{opponent(m)} {isHome(m) ? "(hj)" : "(ude)"}</div>
-            <div style={{ fontSize: "11px", color: C.muted, marginBottom: sorted.length ? "10px" : 0 }}>{fmtDate(m.date)} · {total} stemme{total !== 1 ? "r" : ""} · {isRevealed ? <span style={{ color: "#3fb950" }}>Afsluttet</span> : "Ikke afsluttet"}</div>
-            {sorted.map(([key, entry], i) => {
-              const pct = total ? Math.round(entry.count / total * 100) : 0;
-              return (
-                <div key={key} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px" }}>
-                  <div style={{ fontSize: "12px", color: i === 0 ? C.gold : C.muted, width: "16px" }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "12px", fontWeight: i === 0 ? 700 : 500 }}>{entry.name}</div>
-                    <div style={{ height: "3px", background: i === 0 ? C.gold : C.border, width: `${pct}%`, borderRadius: "2px", marginTop: "3px" }} />
-                  </div>
-                  <div style={{ fontSize: "11px", color: C.muted }}>{entry.count} ({pct}%)</div>
-                </div>
-              );
-            })}
+          <div key={key} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px" }}>
+            <div style={{ fontSize: "12px", color: i === 0 ? C.gold : C.muted, width: "16px" }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: "12px", fontWeight: i === 0 ? 700 : 500 }}>{entry.name}</div>
+              <div style={{ height: "3px", background: i === 0 ? C.gold : C.border, width: `${pct}%`, borderRadius: "2px", marginTop: "3px" }} />
+            </div>
+            <div style={{ fontSize: "11px", color: C.muted }}>{entry.count} ({pct}%)</div>
           </div>
         );
       })}
@@ -934,15 +956,21 @@ function MotmTab({ state }) {
   );
 }
 
-// ---- BACKUP TAB (Excel-eksport, JSON-backup/-import) ----
 // ---- VASKETØJ TAB ----
 function LaundryTab({ state, dispatch }) {
   const [candidate, setCandidate] = useState(null);
   const [msg, setMsg] = useState(null);
+  const matchesSorted = [...(state.matches || [])].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  const [matchId, setMatchId] = useState(matchesSorted[0]?.id || "");
 
   const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
   const pool = computeLaundryPool(squad, state.laundryHistory);
   const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
+
+  function matchLabelFor(id) {
+    const m = state.matches.find(x => x.id === +id);
+    return m ? `${fmtDate(m.date)} – ${opponent(m)}` : null;
+  }
 
   function rollRandom() {
     setMsg(null);
@@ -953,7 +981,7 @@ function LaundryTab({ state, dispatch }) {
 
   function confirmAssign() {
     if (!candidate) return;
-    dispatch({ type: "ASSIGN_LAUNDRY", name: candidate });
+    dispatch({ type: "ASSIGN_LAUNDRY", name: candidate, matchId: matchId || null, matchLabel: matchId ? matchLabelFor(matchId) : null });
     setMsg({ type: "ok", text: `${candidate} er registreret som denne omgangs vasketøjs-ansvarlig.` });
     setCandidate(null);
   }
@@ -977,13 +1005,23 @@ function LaundryTab({ state, dispatch }) {
           {pool.length} af {squad.length} er stadig med i denne runde
         </div>
 
+        {matchesSorted.length > 0 && (
+          <>
+            <label style={S.label}>Kamp (valgfrit, men anbefalet)</label>
+            <select style={S.input} value={matchId} onChange={e => setMatchId(e.target.value)}>
+              <option value="">— Ingen bestemt kamp —</option>
+              {matchesSorted.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m)}</option>)}
+            </select>
+          </>
+        )}
+
         {msg && <div style={S.ok}>{msg.text}</div>}
 
         {candidate ? (
           <div style={{ textAlign: "center", padding: "16px 0" }}>
             <div style={{ fontSize: "13px", color: C.muted, marginBottom: "6px" }}>🎲 Trukket:</div>
             <div style={{ fontSize: "22px", fontWeight: 800, color: C.gold, marginBottom: "16px" }}>{candidate}</div>
-            <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+            <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
               <button style={S.btn("primary", false)} onClick={confirmAssign}>✓ Bekræft</button>
               <button style={S.btn("secondary", false)} onClick={rollRandom}>🎲 Træk igen</button>
             </div>
@@ -999,12 +1037,12 @@ function LaundryTab({ state, dispatch }) {
           <div style={{ fontSize: "13px", color: C.muted }}>Ingen registreringer endnu.</div>
         ) : (
           history.map(e => (
-            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", borderRadius: "7px", border: `1px solid ${C.border}`, marginBottom: "6px" }}>
-              <div>
+            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", borderRadius: "7px", border: `1px solid ${C.border}`, marginBottom: "6px", gap: "8px" }}>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: "13px", fontWeight: 600 }}>{e.name}</div>
-                <div style={{ fontSize: "11px", color: C.muted }}>{fmtDanishTime(e.date)}</div>
+                <div style={{ fontSize: "11px", color: C.muted }}>{fmtDanishTime(e.date)}{e.matchLabel ? ` · ${e.matchLabel}` : ""}</div>
               </div>
-              <button onClick={() => deleteEntry(e.id)} title="Slet (fejlregistrering)" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }}>🗑</button>
+              <button onClick={() => deleteEntry(e.id)} title="Slet (fejlregistrering)" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px", flexShrink: 0 }}>🗑</button>
             </div>
           ))
         )}
