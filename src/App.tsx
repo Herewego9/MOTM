@@ -305,7 +305,7 @@ function VoteView({ state, dispatch }) {
             <div style={S.badge(true)}><span style={S.dot(true)} /> Åben</div>
           </div>
           {err && <div style={S.err}>{err}</div>}
-          <label style={S.label}>Hvem er kampens MVP ⭐?</label>
+          <label style={{ ...S.label, fontSize: "16px" }}>Hvem er kampens MVP ⭐?</label>
           {squad.length > 0 ? (
             <select style={S.input} value={playerName} onChange={e => { setPlayerName(e.target.value); setErr(""); }}>
               <option value="">— Vælg spiller —</option>
