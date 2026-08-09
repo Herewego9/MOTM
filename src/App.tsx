@@ -275,7 +275,7 @@ function VoteView({ state, dispatch }) {
   return (
     <div>
       <div style={{ marginBottom: "16px" }}>
-        <div style={{ fontSize: "21px", fontWeight: 800, marginBottom: "2px" }}>🏆 Kampens Spiller</div>
+        <div style={{ fontSize: "21px", fontWeight: 800, marginBottom: "2px" }}>🏆 Kampens Spiller 🏆</div>
         <div style={{ color: C.muted, fontSize: "12px" }}>ST 70 · Herrer Serie 5 · Efterår 2026</div>
       </div>
 
