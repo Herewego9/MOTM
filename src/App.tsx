@@ -14,6 +14,10 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
 // Kampdata (stemmer, statistik, m.m.) er DELT mellem alle der bruger appen – ligger i Supabase.
 // "Har jeg stemt"-status er PERSONLIG for denne enhed – ligger i localStorage.
+// Bemærk: disse er kun INTERNE opbevaringsnøgler i jeres egen Supabase-database –
+// de vises aldrig for brugerne og er derfor ikke et branding-problem. De er IKKE
+// ændret her, fordi det ville få appen til at miste forbindelsen til jeres allerede
+// gemte data (den ville lede efter en ny, tom nøgle i stedet for jeres rigtige data).
 const SHARED_KEY = "st70-shared";
 const PERSONAL_KEY = "st70-voted-by-me";
 
@@ -26,6 +30,8 @@ const INIT_SHARED = {
   matches: [], // Tomt som udgangspunkt – hentes ind via Admin → Kampprogram (DBU-link)
   seasonHistory: [], // Arkiverede, afsluttede sæsoner (se ARCHIVE ved RESET/RESET_SEASON)
   laundryHistory: [], // Hvem har haft spilletøjet med hjem til vask, og hvornår
+  teamName: null, // Sættes automatisk ud fra DBU-kampprogrammet – ingen hardkodede holdnavne
+  competition: null, // Række/turnering, sættes automatisk fra DBU
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -85,8 +91,8 @@ const S = {
 };
 
 function fmtDate(iso) { return new Date(iso).toLocaleDateString("da-DK", { weekday: "short", day: "numeric", month: "short" }); }
-function isHome(m) { return m.home === "ST 70"; }
-function opponent(m) { return isHome(m) ? m.away : m.home; }
+function isHome(m, teamName) { return !!teamName && m.home === teamName; }
+function opponent(m, teamName) { return isHome(m, teamName) ? m.away : m.home; }
 
 // ---- Storage: delt data i Supabase, personlig data i localStorage ----
 async function loadSharedFromSupabase() {
@@ -225,13 +231,13 @@ function reducer(state, action) {
     case "SET_MATCHES":
       // Bruges ved opdatering INDEN FOR samme sæson – fx et tidspunkt der ændres.
       // Stemmer/statistik rører vi ikke, de er koblet til kampens DBU-nummer.
-      return { ...state, matches: action.matches };
+      return { ...state, matches: action.matches, teamName: action.teamName || state.teamName, competition: action.competition || state.competition };
     case "RESET_SEASON": {
       // Bruges ved en HELT NY sæson – nyt kampprogram, og alt gammelt data
       // (stemmer, statistik, åben afstemning) nulstilles bevidst. Den afsluttede
       // sæson arkiveres først, så man altid kan slå gamle tal op senere.
       const archive = archiveCurrentSeason(state, action.label);
-      return { ...state, matches: action.matches, votes: {}, revealed: {}, matchStats: {}, openMatchId: null, seasonHistory: archive };
+      return { ...state, matches: action.matches, votes: {}, revealed: {}, matchStats: {}, openMatchId: null, seasonHistory: archive, teamName: action.teamName || state.teamName, competition: action.competition || state.competition };
     }
     case "DELETE_SEASON":
       return { ...state, seasonHistory: (state.seasonHistory || []).filter(s => String(s.id) !== String(action.id)) };
@@ -276,7 +282,7 @@ function VoteView({ state, dispatch }) {
     <div>
       <div style={{ marginBottom: "16px" }}>
         <div style={{ fontSize: "21px", fontWeight: 800, marginBottom: "2px" }}>🏆 Kampens Spiller 🏆</div>
-        <div style={{ color: C.muted, fontSize: "12px" }}>ST 70 · Herrer Serie 5 · Efterår 2026</div>
+        <div style={{ color: C.muted, fontSize: "12px" }}>{[state.teamName, state.competition].filter(Boolean).join(" · ") || "Hent kampprogram i Admin for at komme i gang"}</div>
       </div>
 
       {!openMatchId ? (
@@ -299,7 +305,7 @@ function VoteView({ state, dispatch }) {
         <div style={S.card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", flexWrap: "wrap", marginBottom: "18px" }}>
             <div>
-              <div style={S.h2}>{isHome(match) ? "ST 70 vs " : ""}{opponent(match)}{!isHome(match) ? " (ude)" : " (hjemme)"}</div>
+              <div style={S.h2}>{isHome(match, state.teamName) ? `${state.teamName} vs ` : ""}{opponent(match, state.teamName)}{!isHome(match, state.teamName) ? " (ude)" : " (hjemme)"}</div>
               <div style={{ color: C.muted, fontSize: "12px", marginTop: "2px" }}>{fmtDate(match.date)} · {match.time} · {match.venue}</div>
             </div>
             <div style={S.badge(true)}><span style={S.dot(true)} /> Åben</div>
@@ -328,7 +334,7 @@ function VoteView({ state, dispatch }) {
           return (
             <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 11px", borderRadius: "7px", marginBottom: "5px", background: isActive ? "rgba(35,134,54,0.08)" : "transparent", border: isActive ? "1px solid rgba(63,185,80,0.25)" : `1px solid ${C.border}` }}>
               <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
-              <div style={{ flex: 1, fontSize: "13px", fontWeight: 500 }}>{isHome(m) ? "🏠 " : "✈️ "}{opponent(m)}</div>
+              <div style={{ flex: 1, fontSize: "13px", fontWeight: 500 }}>{isHome(m, state.teamName) ? "🏠 " : "✈️ "}{opponent(m, state.teamName)}</div>
               <div style={{ fontSize: "11px", color: done ? "#3fb950" : isActive ? "#3fb950" : C.muted, fontWeight: isActive ? 700 : 400 }}>{done ? "✓" : isActive ? "● Åben" : m.time}</div>
             </div>
           );
@@ -547,7 +553,7 @@ function MatchesTab({ state, dispatch }) {
           <div key={m.id} style={{ border: `1px solid ${isOpen ? "rgba(63,185,80,0.4)" : C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px", background: isOpen ? "rgba(35,134,54,0.05)" : "transparent" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", flexWrap: "wrap" }}>
               <div>
-                <div style={{ fontWeight: 600, fontSize: "13px" }}>{opponent(m)} {isHome(m) ? "(hj)" : "(ude)"}</div>
+                <div style={{ fontWeight: 600, fontSize: "13px" }}>{opponent(m, state.teamName)} {isHome(m, state.teamName) ? "(hj)" : "(ude)"}</div>
                 <div style={{ color: C.muted, fontSize: "11px", marginTop: "2px" }}>{fmtDate(m.date)} · {m.time} · {totalVotes} stemme{totalVotes !== 1 ? "r" : ""}{hasStats ? " · stat ✓" : ""}</div>
               </div>
               <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
@@ -608,7 +614,7 @@ function StatsTab({ state, dispatch }) {
       setRawFetch(data);
       // Gæt hvilket hold der er "vores" ved at se om holdnavnet matcher noget i spillertruppen/kamplisten.
       const match = state.matches.find(m => m.id === selMatch);
-      const guessHome = match && isHome(match);
+      const guessHome = match && isHome(match, state.teamName);
       setSide(guessHome ? "home" : "away");
     } catch (e) {
       setFetchErr(e.message || "Noget gik galt under hentning.");
@@ -660,7 +666,7 @@ function StatsTab({ state, dispatch }) {
     <div>
       <label style={S.label}>Kamp</label>
       <select style={S.input} value={selMatch} onChange={e => { setSelMatch(+e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setSuggestion(null); }}>
-        {state.matches.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m)}</option>)}
+        {state.matches.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>)}
       </select>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
@@ -854,7 +860,7 @@ function DbuImportTab({ state, dispatch }) {
     if (!preview) return;
     // Samme sæson: kampene fra DBU er den "sande" version. Stemmer/statistik rører
     // vi ikke – de er koblet til DBU's kampnummer og forbliver derfor korrekte.
-    dispatch({ type: "SET_MATCHES", matches: preview.matches });
+    dispatch({ type: "SET_MATCHES", matches: preview.matches, teamName: preview.teamName, competition: preview.competition });
     setMsg({ type: "ok", text: `Kampprogram opdateret med ${preview.matches.length} kampe. Stemmer og statistik er bevaret.` });
     setPreview(null);
     setUrl("");
@@ -864,7 +870,7 @@ function DbuImportTab({ state, dispatch }) {
     if (!preview) return;
     if (!window.confirm("Start en HELT NY sæson? Den nuværende sæson arkiveres automatisk (kan ses under Statistik/Rangliste), og alt aktivt data nulstilles.")) return;
     const label = window.prompt("Navngiv sæsonen der afsluttes (fx 'Efterår 2026'):", `Sæson ${new Date().getFullYear()}`);
-    dispatch({ type: "RESET_SEASON", matches: preview.matches, label });
+    dispatch({ type: "RESET_SEASON", matches: preview.matches, label, teamName: preview.teamName, competition: preview.competition });
     setMsg({ type: "ok", text: `Ny sæson startet med ${preview.matches.length} kampe. Den gamle sæson er arkiveret.` });
     setPreview(null);
     setUrl("");
@@ -969,7 +975,7 @@ function LaundryTab({ state, dispatch }) {
 
   function matchLabelFor(id) {
     const m = state.matches.find(x => x.id === +id);
-    return m ? `${fmtDate(m.date)} – ${opponent(m)}` : null;
+    return m ? `${fmtDate(m.date)} – ${opponent(m, state.teamName)}` : null;
   }
 
   function rollRandom() {
@@ -1010,7 +1016,7 @@ function LaundryTab({ state, dispatch }) {
             <label style={S.label}>Kamp (valgfrit, men anbefalet)</label>
             <select style={S.input} value={matchId} onChange={e => setMatchId(e.target.value)}>
               <option value="">— Ingen bestemt kamp —</option>
-              {matchesSorted.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m)}</option>)}
+              {matchesSorted.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>)}
             </select>
           </>
         )}
@@ -1051,6 +1057,13 @@ function LaundryTab({ state, dispatch }) {
   );
 }
 
+function slugify(text) {
+  return (text || "kampens-spiller")
+    .toLowerCase()
+    .replace(/[^a-z0-9æøå]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "kampens-spiller";
+}
+
 function BackupTab({ state, dispatch }) {
   const [msg, setMsg] = useState(null); // { type: "ok"|"err", text }
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -1065,7 +1078,7 @@ function BackupTab({ state, dispatch }) {
   }
 
   function exportJson() {
-    downloadBlob(JSON.stringify(state, null, 2), "st70-backup.json", "application/json");
+    downloadBlob(JSON.stringify(state, null, 2), `${slugify(state.teamName)}-backup.json`, "application/json");
     setMsg({ type: "ok", text: "backup.json downloadet." });
   }
 
@@ -1086,7 +1099,7 @@ function BackupTab({ state, dispatch }) {
       .map(p => ({ Spiller: p.name, Kampe: p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Point: scorePlayer(p) }))
       .sort((a, b) => b.Point - a.Point);
     if (!rows.length) { setMsg({ type: "err", text: "Ingen statistik at eksportere endnu." }); return; }
-    downloadBlob(toCsv(rows), "st70-saesonstatistik.csv", "text/csv;charset=utf-8;");
+    downloadBlob(toCsv(rows), `${slugify(state.teamName)}-saesonstatistik.csv`, "text/csv;charset=utf-8;");
     setMsg({ type: "ok", text: "Sæsonstatistik downloadet som CSV (åbnes direkte i Excel)." });
   }
 
@@ -1095,9 +1108,9 @@ function BackupTab({ state, dispatch }) {
       const votes = state.votes[m.id] || {};
       const totalVotes = Object.values(votes).reduce((a, b) => a + b.count, 0);
       const winner = Object.entries(votes).sort((a, b) => b[1].count - a[1].count)[0];
-      return { Dato: m.date, Modstander: opponent(m), "Hjemme/ude": isHome(m) ? "Hjemme" : "Ude", "Kampens spiller": winner ? winner[1].name : "", Stemmer: totalVotes };
+      return { Dato: m.date, Modstander: opponent(m, state.teamName), "Hjemme/ude": isHome(m, state.teamName) ? "Hjemme" : "Ude", "Kampens spiller": winner ? winner[1].name : "", Stemmer: totalVotes };
     });
-    downloadBlob(toCsv(rows), "st70-kampe.csv", "text/csv;charset=utf-8;");
+    downloadBlob(toCsv(rows), `${slugify(state.teamName)}-kampe.csv`, "text/csv;charset=utf-8;");
     setMsg({ type: "ok", text: "Kampresultater downloadet som CSV." });
   }
 
@@ -1248,7 +1261,7 @@ export default function App() {
         }
       `}</style>
       <div style={{ width: "100%", background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box", flexWrap: "wrap", gap: "8px" }}>
-        <div style={{ fontSize: "16px", fontWeight: 700, display: "flex", alignItems: "center", gap: "7px" }}>⚽ ST 70</div>
+        <div style={{ fontSize: "16px", fontWeight: 700, display: "flex", alignItems: "center", gap: "7px" }}>⚽ {state.teamName || "Kampens Spiller"}</div>
         <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
           <button style={navBtn("vote")} onClick={() => setView("vote")}>Stem</button>
           <button style={navBtn("ranking")} onClick={() => setView("ranking")}>Rangliste</button>
