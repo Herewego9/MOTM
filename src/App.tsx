@@ -155,6 +155,21 @@ function archiveCurrentSeason(state, label) {
 // dækket (en runde er lige afsluttet), eller et navn går igen (vi er passeret
 // grænsen til en tidligere runde). Er alle allerede dækket, starter en ny runde
 // automatisk, og hele truppen er igen med i lodtrækningen.
+// Samler kendte spillernavne fra ALLE steder i appen, ikke kun Trup-listen: kampstatistik
+// (mål/assist/kort) og MOTM-stemmer. Så virker vasketøjs-lodtrækningen selvom Trup aldrig
+// bliver udfyldt – den bruger simpelthen alle, der reelt er registreret et sted i appen.
+function collectKnownPlayers(state) {
+  const names = new Map(); // lowercase → visningsnavn (først fundne stavning bevares)
+  (state.squadNames || []).forEach(n => { if (!names.has(n.toLowerCase())) names.set(n.toLowerCase(), n); });
+  Object.values(state.matchStats || {}).forEach(md => {
+    (md.players || []).forEach(p => { if (!names.has(p.name.toLowerCase())) names.set(p.name.toLowerCase(), p.name); });
+  });
+  Object.values(state.votes || {}).forEach(mv => {
+    Object.values(mv).forEach(entry => { if (!names.has(entry.name.toLowerCase())) names.set(entry.name.toLowerCase(), entry.name); });
+  });
+  return [...names.values()].sort((a, b) => a.localeCompare(b, "da"));
+}
+
 function computeLaundryPool(squadNames, laundryHistory) {
   if (!squadNames || !squadNames.length) return [];
   const sorted = [...(laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
@@ -467,6 +482,8 @@ function AdminView({ state, dispatch }) {
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState("");
   const [tab, setTab] = useState("matches");
+  const [resetLabel, setResetLabel] = useState(`Sæson ${new Date().getFullYear()}`);
+  const [resettingAll, setResettingAll] = useState(false);
 
   if (!authed) return (
     <div style={S.card}>
@@ -499,11 +516,19 @@ function AdminView({ state, dispatch }) {
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
 
       <div style={{ marginTop: "22px", paddingTop: "14px", borderTop: `1px solid ${C.border}` }}>
-        <button style={{ ...S.btn("secondary", false), fontSize: "11px", color: C.muted }} onClick={() => {
-          if (!window.confirm("Nulstil ALT data (kampprogram, stemmer, statistik)? Den nuværende sæson arkiveres automatisk, så du kan se tallene igen senere under Statistik/Rangliste.")) return;
-          const label = window.prompt("Navngiv sæsonen der afsluttes (fx 'Efterår 2026'):", `Sæson ${new Date().getFullYear()}`);
-          dispatch({ type: "RESET", label });
-        }}>Nulstil alt data</button>
+        {!resettingAll ? (
+          <button style={{ ...S.btn("secondary", false), fontSize: "11px", color: C.muted }} onClick={() => setResettingAll(true)}>Nulstil alt data</button>
+        ) : (
+          <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px" }}>
+            <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Nulstiller kampprogram, stemmer og statistik. Den nuværende sæson arkiveres automatisk (se Statistik/Rangliste).</div>
+            <label style={S.label}>Navn på sæsonen der afsluttes</label>
+            <input style={S.input} value={resetLabel} onChange={e => setResetLabel(e.target.value)} />
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button style={{ ...S.btn("danger", false) }} onClick={() => { dispatch({ type: "RESET", label: resetLabel }); setResettingAll(false); }}>Ja, nulstil alt</button>
+              <button style={{ ...S.btn("secondary", false) }} onClick={() => setResettingAll(false)}>Fortryd</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -563,8 +588,8 @@ function MatchesTab({ state, dispatch }) {
                 {totalVotes > 0 && (
                   <button onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
                 )}
-                <button title="Nulstil afstemning – sletter kun stemmer, bevarer statistik" style={{ ...S.btn("warn", false), fontSize: "11px" }} onClick={() => { if (window.confirm("Nulstil stemmer for denne kamp? Statistik bevares.")) dispatch({ type: "RESET_VOTES", matchId: m.id }); }}>🔄 Nulstil afstemning</button>
-                <button title="Nulstil hele kampen – sletter stemmer, statistik og resultat" style={{ ...S.btn("danger", false), fontSize: "11px" }} onClick={() => { if (window.confirm("Nulstil HELE kampen? Stemmer, statistik og resultat slettes.")) dispatch({ type: "RESET_MATCH", matchId: m.id }); }}>🗑 Nulstil kamp</button>
+                <ConfirmButton label="🔄 Nulstil afstemning" style={{ ...S.btn("warn", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_VOTES", matchId: m.id })} />
+                <ConfirmButton label="🗑 Nulstil kamp" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
               </div>
             </div>
             {votesExpanded && <MatchVotesBreakdown state={state} matchId={m.id} />}
@@ -601,7 +626,7 @@ function StatsTab({ state, dispatch }) {
     setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setEditingKey(null);
     setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
-  function handleDelete(playerKey) { if (window.confirm("Slet spiller fra denne kamp?")) dispatch({ type: "DELETE_PLAYER", matchId: selMatch, playerKey }); }
+  function handleDelete(playerKey) { dispatch({ type: "DELETE_PLAYER", matchId: selMatch, playerKey }); }
 
   async function handleFetchSuggestion() {
     setFetchErr(""); setRawFetch(null); setSuggestion(null); setApplyMsg(null); setSide(null);
@@ -746,7 +771,7 @@ function StatsTab({ state, dispatch }) {
                   {[p.goals, p.assists, p.yellowCards, p.redCards].map((v, j) => <td key={j} style={{ textAlign: "center", padding: "7px 6px", borderBottom: `1px solid ${C.border}`, color: v > 0 ? C.text : C.muted }}>{v || 0}</td>)}
                   <td style={{ padding: "4px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
                     <button onClick={() => startEdit(p)} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "14px", padding: "8px" }}>✏️</button>
-                    <button onClick={() => handleDelete(p.name.toLowerCase())} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }}>🗑</button>
+                    <ConfirmButton label="🗑" confirmLabel="Slet" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }} onConfirm={() => handleDelete(p.name.toLowerCase())} />
                   </td>
                 </tr>
               ))}
@@ -849,6 +874,8 @@ function DbuImportTab({ state, dispatch }) {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null); // { teamName, competition, matches }
   const [selectedTeam, setSelectedTeam] = useState("");
+  const [seasonLabel, setSeasonLabel] = useState(`Sæson ${new Date().getFullYear()}`);
+  const [confirmingNewSeason, setConfirmingNewSeason] = useState(false);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState(null);
 
@@ -885,12 +912,11 @@ function DbuImportTab({ state, dispatch }) {
 
   function applyNewSeason() {
     if (!preview || !selectedTeam) return;
-    if (!window.confirm("Start en HELT NY sæson? Den nuværende sæson arkiveres automatisk (kan ses under Statistik/Rangliste), og alt aktivt data nulstilles.")) return;
-    const label = window.prompt("Navngiv sæsonen der afsluttes (fx 'Efterår 2026'):", `Sæson ${new Date().getFullYear()}`);
-    dispatch({ type: "RESET_SEASON", matches: preview.matches, label, teamName: selectedTeam, competition: preview.competition });
+    dispatch({ type: "RESET_SEASON", matches: preview.matches, label: seasonLabel, teamName: selectedTeam, competition: preview.competition });
     setMsg({ type: "ok", text: `Ny sæson startet med ${preview.matches.length} kampe. Den gamle sæson er arkiveret.` });
     setPreview(null);
     setUrl("");
+    setConfirmingNewSeason(false);
   }
 
   // Sammenlign ny liste med den nuværende for at vise, hvad der reelt ændrer sig,
@@ -952,7 +978,19 @@ function DbuImportTab({ state, dispatch }) {
             {!diff.looksLikeNewSeason && (
               <button style={S.btn("primary", false)} onClick={applyImport} disabled={!selectedTeam}>Opdatér kampprogram (behold statistik)</button>
             )}
-            <button style={S.btn("danger", false)} onClick={applyNewSeason} disabled={!selectedTeam}>🗑 Dette er en ny sæson – nulstil alt</button>
+            {!confirmingNewSeason ? (
+              <button style={S.btn("danger", false)} onClick={() => setConfirmingNewSeason(true)} disabled={!selectedTeam}>🗑 Dette er en ny sæson – nulstil alt</button>
+            ) : (
+              <div style={{ width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px", marginTop: "4px" }}>
+                <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Den nuværende sæson arkiveres automatisk, og alt aktivt data nulstilles.</div>
+                <label style={S.label}>Navn på sæsonen der afsluttes</label>
+                <input style={S.input} value={seasonLabel} onChange={e => setSeasonLabel(e.target.value)} />
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button style={S.btn("danger", false)} onClick={applyNewSeason}>Ja, start ny sæson</button>
+                  <button style={S.btn("secondary", false)} onClick={() => setConfirmingNewSeason(false)}>Fortryd</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -993,7 +1031,7 @@ function LaundryTab({ state, dispatch }) {
   const matchesSorted = [...(state.matches || [])].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   const [matchId, setMatchId] = useState(matchesSorted[0]?.id || "");
 
-  const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
+  const squad = collectKnownPlayers(state);
   const pool = computeLaundryPool(squad, state.laundryHistory);
   const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -1016,18 +1054,16 @@ function LaundryTab({ state, dispatch }) {
     setCandidate(null);
   }
 
-  function deleteEntry(id) {
-    if (window.confirm("Slet denne registrering? (Bruges hvis der er sket en fejl)")) dispatch({ type: "DELETE_LAUNDRY_ENTRY", id });
-  }
+  function deleteEntry(id) { dispatch({ type: "DELETE_LAUNDRY_ENTRY", id }); }
 
   if (!squad.length) {
-    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Udfyld spillertruppen under fanen "Trup" først.</div></div>;
+    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen spillere fundet endnu. Udfyld Trup-listen, eller registrér mål/assist/kort eller MOTM-stemmer for en kamp – så bygges listen automatisk.</div></div>;
   }
 
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
-        Trækker tilfældigt en spiller til at tage spilletøjet med hjem til vask. Alle i truppen skal have haft en tur, før nogen kan blive trukket igen – så starter en ny runde automatisk.
+        Trækker tilfældigt en spiller til at tage spilletøjet med hjem til vask. Spillerpuljen bygges automatisk ud fra Trup-listen samt alle, der har mål/assist/kort eller MOTM-stemmer registreret – du behøver altså ikke holde Trup opdateret for at bruge det her. Alle skal have haft en tur, før nogen trækkes igen.
       </div>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "16px" }}>
@@ -1072,13 +1108,29 @@ function LaundryTab({ state, dispatch }) {
                 <div style={{ fontSize: "13px", fontWeight: 600 }}>{e.name}</div>
                 <div style={{ fontSize: "11px", color: C.muted }}>{fmtDanishTime(e.date)}{e.matchLabel ? ` · ${e.matchLabel}` : ""}</div>
               </div>
-              <button onClick={() => deleteEntry(e.id)} title="Slet (fejlregistrering)" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px", flexShrink: 0 }}>🗑</button>
+              <ConfirmButton label="🗑" confirmLabel="Slet" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px", flexShrink: 0 }} onConfirm={() => deleteEntry(e.id)} />
             </div>
           ))
         )}
       </div>
     </div>
   );
+}
+
+// Native window.confirm() kan blive permanent blokeret af mobilbrowsere, hvis man
+// krydser "husk mit svar" af – derefter svarer den automatisk "nej" for evigt.
+// Denne knap bygger bekræftelsen ind i selve appen i stedet, så det aldrig sker.
+function ConfirmButton({ label, confirmLabel = "Ja, gør det", style, onConfirm }) {
+  const [confirming, setConfirming] = useState(false);
+  if (confirming) {
+    return (
+      <span style={{ display: "inline-flex", gap: "6px" }}>
+        <button style={{ ...S.btn("danger", false), fontSize: "11px" }} onClick={() => { setConfirming(false); onConfirm(); }}>{confirmLabel}</button>
+        <button style={{ ...S.btn("secondary", false), fontSize: "11px" }} onClick={() => setConfirming(false)}>Fortryd</button>
+      </span>
+    );
+  }
+  return <button style={style} onClick={() => setConfirming(true)}>{label}</button>;
 }
 
 function slugify(text) {
@@ -1091,6 +1143,7 @@ function slugify(text) {
 function BackupTab({ state, dispatch }) {
   const [msg, setMsg] = useState(null); // { type: "ok"|"err", text }
   const [fileInputKey, setFileInputKey] = useState(0);
+  const [pendingImport, setPendingImport] = useState(null); // { fileName, state }
 
   function downloadBlob(content, filename, mime) {
     const blob = new Blob([content], { type: mime });
@@ -1145,15 +1198,20 @@ function BackupTab({ state, dispatch }) {
     reader.onload = (ev) => {
       try {
         const parsed = JSON.parse(ev.target.result);
-        if (!window.confirm("Import overskriver alt nuværende data med indholdet af filen. Fortsæt?")) { setFileInputKey(k => k + 1); return; }
-        dispatch({ type: "IMPORT_STATE", state: parsed });
-        setMsg({ type: "ok", text: "Data importeret." });
+        setPendingImport({ fileName: file.name, state: parsed });
       } catch (err) {
         setMsg({ type: "err", text: "Filen kunne ikke læses – tjek at det er en gyldig backup.json." });
       }
       setFileInputKey(k => k + 1);
     };
     reader.readAsText(file);
+  }
+
+  function confirmImport() {
+    if (!pendingImport) return;
+    dispatch({ type: "IMPORT_STATE", state: pendingImport.state });
+    setMsg({ type: "ok", text: "Data importeret." });
+    setPendingImport(null);
   }
 
   return (
@@ -1190,11 +1248,12 @@ function BackupTab({ state, dispatch }) {
                 <div style={{ fontSize: "13px", fontWeight: 600 }}>{s.label}</div>
                 <div style={{ fontSize: "11px", color: C.muted }}>Arkiveret {fmtDanishTime(s.archivedAt)}</div>
               </div>
-              <button
-                title="Slet denne sæson permanent"
+              <ConfirmButton
+                label="🗑 Slet"
+                confirmLabel="Slet permanent"
                 style={{ ...S.btn("danger", false), fontSize: "11px" }}
-                onClick={() => { if (window.confirm(`Slet sæsonen "${s.label}" permanent? Kan ikke fortrydes.`)) dispatch({ type: "DELETE_SEASON", id: s.id }); }}
-              >🗑 Slet</button>
+                onConfirm={() => dispatch({ type: "DELETE_SEASON", id: s.id })}
+              />
             </div>
           ))
         )}
@@ -1205,6 +1264,15 @@ function BackupTab({ state, dispatch }) {
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Gendan fra backup</div>
         <div style={{ fontSize: "11px", color: C.muted, marginBottom: "10px" }}>Vælg en tidligere downloadet backup.json for at gendanne alt data. Overskriver det nuværende data.</div>
         <input key={fileInputKey} type="file" accept="application/json" onChange={handleImport} style={{ fontSize: "12px", color: C.text }} />
+        {pendingImport && (
+          <div style={{ marginTop: "12px", background: "rgba(218,54,51,0.08)", border: "1px solid rgba(218,54,51,0.3)", borderRadius: "8px", padding: "12px" }}>
+            <div style={{ fontSize: "12px", marginBottom: "10px" }}>Fil valgt: <strong>{pendingImport.fileName}</strong>. Dette overskriver ALT nuværende data. Fortsæt?</div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button style={S.btn("danger", false)} onClick={confirmImport}>Ja, overskriv med filen</button>
+              <button style={S.btn("secondary", false)} onClick={() => setPendingImport(null)}>Fortryd</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
