@@ -24,7 +24,7 @@ export default async function handler(req, res) {
     const $ = cheerio.load(html);
 
     const teamName = $("h1").first().text().trim() || null;
-    const competition = $("h2, h3").first().text().trim() || null;
+    const competition = $("h3").first().text().trim() || null;
 
     const matches = [];
     $("table tr").each((_, row) => {
