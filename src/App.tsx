@@ -1,10 +1,6 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// ==== UDFYLD DISSE TO MED DINE EGNE SUPABASE-VÆRDIER (Settings > API) ====
-// ==== Supabase-nøgler og admin-kode læses fra miljøvariabler, IKKE fra selve koden ====
-// Sæt disse i Vercel: Settings → Environment Variables (og lokalt i en .env-fil, som
-// aldrig committes til GitHub). Se instruktioner i chatten for hvordan.
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // ==========================================================================
@@ -12,12 +8,6 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
-// Kampdata (stemmer, statistik, m.m.) er DELT mellem alle der bruger appen – ligger i Supabase.
-// "Har jeg stemt"-status er PERSONLIG for denne enhed – ligger i localStorage.
-// Bemærk: disse er kun INTERNE opbevaringsnøgler i jeres egen Supabase-database –
-// de vises aldrig for brugerne og er derfor ikke et branding-problem. De er IKKE
-// ændret her, fordi det ville få appen til at miste forbindelsen til jeres allerede
-// gemte data (den ville lede efter en ny, tom nøgle i stedet for jeres rigtige data).
 const SHARED_KEY = "st70-shared";
 const PERSONAL_KEY = "st70-voted-by-me";
 
@@ -234,6 +224,21 @@ function reducer(state, action) {
       const key = player.name.toLowerCase();
       const exists = prevData.players.some(p => p.name.toLowerCase() === key);
       const newPlayers = exists ? prevData.players.map(p => p.name.toLowerCase() === key ? { ...p, ...player } : p) : [...prevData.players, player];
+      return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
+    }
+    case "UPSERT_PLAYERS": {
+      // Ligesom UPSERT_PLAYER, men opdaterer flere spillere i ÉT trin (ét dispatch,
+      // ét Supabase-gem). Undgår race condition ved mange enkeltvise dispatch-kald
+      // i træk, som kunne få nogle spillere til at "forsvinde" igen.
+      const { matchId, players } = action;
+      const prevData = state.matchStats[matchId] || { players: [], motmKey: null };
+      let newPlayers = [...prevData.players];
+      players.forEach(player => {
+        const key = player.name.toLowerCase();
+        const idx = newPlayers.findIndex(p => p.name.toLowerCase() === key);
+        if (idx >= 0) newPlayers[idx] = { ...newPlayers[idx], ...player };
+        else newPlayers.push(player);
+      });
       return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
     }
     case "DELETE_PLAYER": {
@@ -668,11 +673,12 @@ function StatsTab({ state, dispatch }) {
       if (g.scorer) { tally[g.scorer] = tally[g.scorer] || { name: g.scorer, goals: 0, assists: 0 }; tally[g.scorer].goals += 1; }
       if (g.assist) { tally[g.assist] = tally[g.assist] || { name: g.assist, goals: 0, assists: 0 }; tally[g.assist].assists += 1; }
     });
-    Object.values(tally).forEach(player => {
+    const players = Object.values(tally).map(player => {
       const existing = matchData.players.find(p => p.name.toLowerCase() === player.name.toLowerCase());
-      dispatch({ type: "UPSERT_PLAYER", matchId: selMatch, player: { name: player.name, goals: player.goals, assists: player.assists, yellowCards: existing?.yellowCards || 0, redCards: existing?.redCards || 0 } });
+      return { name: player.name, goals: player.goals, assists: player.assists, yellowCards: existing?.yellowCards || 0, redCards: existing?.redCards || 0 };
     });
-    setApplyMsg({ type: "ok", text: `${Object.keys(tally).length} spillere opdateret ud fra forslaget. Tjek tabellen nedenfor og ret evt. gule/røde kort manuelt.` });
+    dispatch({ type: "UPSERT_PLAYERS", matchId: selMatch, players });
+    setApplyMsg({ type: "ok", text: `${players.length} spillere opdateret ud fra forslaget. Tjek tabellen nedenfor og ret evt. gule/røde kort manuelt.` });
     setRawFetch(null); setSuggestion(null); setSide(null);
     setDbuUrl("");
   }
