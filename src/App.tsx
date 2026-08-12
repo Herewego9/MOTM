@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
-
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // ==========================================================================
@@ -56,29 +55,40 @@ function scorePlayer(p) {
     + (p.yellowCards || 0) * WEIGHTS.yellowCard + (p.redCards || 0) * WEIGHTS.redCard;
 }
 
+// ---- Designsystem: "Matchday" – banegrøn nat, scoreboard-typografi ----
 const C = {
-  bg: "#0d1117", surface: "#161b22", border: "#30363d",
-  accent: "#238636", danger: "#da3633", gold: "#d4a017",
-  blue: "#58a6ff", text: "#e6edf3", muted: "#8b949e", inputBg: "#0d1117",
+  bg: "#0a1210", surface: "#121e19", surfaceRaised: "#182720", border: "#25362d",
+  accent: "#22c55e", accentDeep: "#15803d", danger: "#ef4444", gold: "#f2b544",
+  yellow: "#fde047", blue: "#38bdf8", text: "#f2f5f1", muted: "#8fa396", inputBg: "#0e1815",
+};
+
+const F = {
+  display: "'Barlow Condensed', 'Inter', system-ui, sans-serif", // overskrifter, tal, scoreboard-følelse
+  body: "'Inter', system-ui, -apple-system, sans-serif",
 };
 
 const S = {
-  card: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "24px", width: "100%", boxSizing: "border-box", marginTop: "14px" },
-  h2: { fontSize: "18px", fontWeight: 700, marginBottom: "4px", letterSpacing: "-0.3px" },
-  label: { display: "block", fontSize: "11px", fontWeight: 600, color: C.muted, marginBottom: "4px", textTransform: "uppercase", letterSpacing: "0.5px" },
-  input: { width: "100%", background: C.inputBg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "10px 12px", color: C.text, fontSize: "14px", outline: "none", boxSizing: "border-box", marginBottom: "12px" },
+  card: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "24px", width: "100%", boxSizing: "border-box", marginTop: "14px", boxShadow: "0 4px 18px rgba(0,0,0,0.28)" },
+  h2: { fontFamily: F.display, fontSize: "21px", fontWeight: 700, marginBottom: "4px", letterSpacing: "0.2px" },
+  label: { display: "block", fontSize: "11px", fontWeight: 700, color: C.muted, marginBottom: "5px", textTransform: "uppercase", letterSpacing: "0.8px" },
+  input: { width: "100%", background: C.inputBg, border: `1px solid ${C.border}`, borderRadius: "9px", padding: "11px 13px", color: C.text, fontFamily: F.body, fontSize: "14px", outline: "none", boxSizing: "border-box", marginBottom: "12px", transition: "border-color 0.15s, box-shadow 0.15s" },
   btn: (v = "primary", full = true) => ({
-    width: full ? "100%" : "auto", padding: full ? "11px" : "7px 12px",
-    borderRadius: "7px", border: "none", cursor: "pointer",
-    fontSize: full ? "14px" : "12px", fontWeight: 600,
-    background: v === "primary" ? C.accent : v === "danger" ? C.danger : v === "gold" ? C.gold : v === "warn" ? "#9e6a03" : C.border,
-    color: "#fff", marginBottom: 0, whiteSpace: "nowrap",
+    width: full ? "100%" : "auto", padding: full ? "12px" : "8px 14px",
+    borderRadius: "9px", border: "none", cursor: "pointer",
+    fontFamily: F.body, fontSize: full ? "14px" : "12px", fontWeight: 700, letterSpacing: "0.2px",
+    background: v === "primary" ? `linear-gradient(180deg, ${C.accent}, ${C.accentDeep})` : v === "danger" ? "#dc2626" : v === "gold" ? C.gold : v === "warn" ? "#a16207" : C.surfaceRaised,
+    color: v === "secondary" ? C.text : v === "gold" ? "#1a1200" : "#fff",
+    boxShadow: v === "primary" ? "0 2px 10px rgba(34,197,94,0.25)" : "none",
+    marginBottom: 0, whiteSpace: "nowrap", transition: "filter 0.15s, transform 0.1s",
   }),
-  err: { color: "#f85149", fontSize: "13px", marginBottom: "10px", background: "rgba(248,81,73,0.1)", border: "1px solid rgba(248,81,73,0.3)", borderRadius: "6px", padding: "8px 12px" },
-  ok: { color: "#3fb950", fontSize: "13px", marginBottom: "10px", background: "rgba(63,185,80,0.1)", border: "1px solid rgba(63,185,80,0.3)", borderRadius: "6px", padding: "8px 12px" },
-  badge: (open) => ({ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "20px", background: open ? "rgba(35,134,54,0.15)" : "rgba(218,54,51,0.15)", color: open ? "#3fb950" : "#f85149", border: `1px solid ${open ? "rgba(63,185,80,0.3)" : "rgba(248,81,73,0.3)"}` }),
-  dot: (open) => ({ width: "6px", height: "6px", borderRadius: "50%", background: open ? "#3fb950" : "#f85149", display: "inline-block" }),
+  err: { color: "#fca5a5", fontSize: "13px", marginBottom: "10px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "8px", padding: "9px 12px" },
+  ok: { color: "#86efac", fontSize: "13px", marginBottom: "10px", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.3)", borderRadius: "8px", padding: "9px 12px" },
+  badge: (open) => ({ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "11px", fontWeight: 700, padding: "4px 10px", borderRadius: "20px", letterSpacing: "0.3px", background: open ? "rgba(34,197,94,0.14)" : "rgba(239,68,68,0.14)", color: open ? "#4ade80" : "#f87171", border: `1px solid ${open ? "rgba(74,222,128,0.35)" : "rgba(248,113,113,0.35)"}` }),
+  dot: (open) => ({ width: "6px", height: "6px", borderRadius: "50%", background: open ? "#4ade80" : "#f87171", display: "inline-block", boxShadow: open ? "0 0 6px rgba(74,222,128,0.8)" : "none" }),
 };
+
+// Diskret bane-stribetekstur til side-baggrunden – signaturdetaljen, holdt meget svag.
+const PITCH_STRIPES = `repeating-linear-gradient(115deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 60px, transparent 60px, transparent 120px)`;
 
 function fmtDate(iso) { return new Date(iso).toLocaleDateString("da-DK", { weekday: "short", day: "numeric", month: "short" }); }
 function isHome(m, teamName) { return !!teamName && m.home === teamName; }
@@ -301,7 +311,7 @@ function VoteView({ state, dispatch }) {
   return (
     <div>
       <div style={{ marginBottom: "16px" }}>
-        <div style={{ fontSize: "21px", fontWeight: 800, marginBottom: "2px" }}>🏆 Kampens Spiller 🏆</div>
+        <div style={{ fontFamily: F.display, fontSize: "26px", fontWeight: 800, letterSpacing: "0.3px", marginBottom: "2px" }}>🏆 Kampens Spiller 🏆</div>
         <div style={{ color: C.muted, fontSize: "12px" }}>{[state.teamName, state.competition].filter(Boolean).join(" · ") || "Hent kampprogram i Admin for at komme i gang"}</div>
       </div>
 
@@ -352,10 +362,10 @@ function VoteView({ state, dispatch }) {
           const isActive = m.id === openMatchId;
           const done = revealed[m.id];
           return (
-            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 11px", borderRadius: "7px", marginBottom: "5px", background: isActive ? "rgba(35,134,54,0.08)" : "transparent", border: isActive ? "1px solid rgba(63,185,80,0.25)" : `1px solid ${C.border}` }}>
+            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 11px", borderRadius: "7px", marginBottom: "5px", background: isActive ? "rgba(34,197,94,0.08)" : "transparent", border: isActive ? "1px solid rgba(74,222,128,0.25)" : `1px solid ${C.border}` }}>
               <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
               <div style={{ flex: 1, fontSize: "13px", fontWeight: 500 }}>{isHome(m, state.teamName) ? "🏠 " : "✈️ "}{opponent(m, state.teamName)}</div>
-              <div style={{ fontSize: "11px", color: done ? "#3fb950" : isActive ? "#3fb950" : C.muted, fontWeight: isActive ? 700 : 400 }}>{done ? "✓" : isActive ? "● Åben" : m.time}</div>
+              <div style={{ fontSize: "11px", color: done ? "#4ade80" : isActive ? "#4ade80" : C.muted, fontWeight: isActive ? 700 : 400 }}>{done ? "✓" : isActive ? "● Åben" : m.time}</div>
             </div>
           );
         })}
@@ -406,7 +416,7 @@ function StatsView({ state }) {
         <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen statistik {archived ? "for denne sæson" : "endnu"}.</div></div>
       ) : (
         <div style={S.card}>
-          <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "14px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
+          <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "14px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
               <thead>
@@ -417,7 +427,7 @@ function StatsView({ state }) {
               </thead>
               <tbody>
                 {players.map((p, i) => (
-                  <tr key={p.name} style={{ background: i === 0 ? "rgba(212,160,23,0.06)" : "transparent" }}>
+                  <tr key={p.name} style={{ background: i === 0 ? "rgba(242,181,68,0.08)" : "transparent" }}>
                     <td style={{ padding: "8px 8px", fontWeight: i === 0 ? 700 : 500, color: i === 0 ? C.gold : C.text, borderBottom: `1px solid ${C.border}` }}>{i === 0 ? "⭐ " : ""}{p.name}</td>
                     {cols.map(c => <td key={c.key} style={{ textAlign: "center", padding: "8px 5px", borderBottom: `1px solid ${C.border}`, color: (p[c.key] || 0) > 0 ? C.text : C.muted, fontWeight: (p[c.key] || 0) > 0 ? 600 : 400 }}>{p[c.key] || 0}</td>)}
                   </tr>
@@ -454,23 +464,26 @@ function RankingView({ state }) {
         <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ranglisten opdateres, når der er registreret statistik.</div></div>
       ) : (
         <div style={S.card}>
-          <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "4px" }}>🏅 {archived ? archived.label : "Sæsonens rangliste"}</div>
+          <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>🏅 {archived ? archived.label : "Sæsonens rangliste"}</div>
           <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px" }}>
             Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort
           </div>
           {players.map((p, i) => (
-            <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
-              <div style={{ fontSize: i < 3 ? "20px" : "13px", width: "28px", textAlign: "center", color: i < 3 ? undefined : C.muted, fontWeight: 700 }}>{medal(i)}</div>
+            <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
+              <div style={i < 3
+                ? { fontSize: "22px", width: "30px", textAlign: "center" }
+                : { fontSize: "12px", width: "30px", height: "30px", borderRadius: "50%", background: C.surfaceRaised, border: `1px solid ${C.border}`, color: C.muted, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.display }
+              }>{medal(i)}</div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: i === 0 ? 700 : 600, fontSize: "14px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
-                <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "3px" }}>
+                <div style={{ fontFamily: F.display, fontWeight: i === 0 ? 700 : 600, fontSize: "17px", letterSpacing: "0.2px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
+                <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "2px" }}>
                   <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
                 </div>
                 <div style={{ height: "4px", background: C.border, borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#a855f7" : C.muted, borderRadius: "2px" }} />
+                  <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#c084fc" : C.muted, borderRadius: "2px" }} />
                 </div>
               </div>
-              <div style={{ fontSize: "16px", fontWeight: 800, color: i === 0 ? C.gold : C.text, minWidth: "34px", textAlign: "right" }}>{p.score}</div>
+              <div style={{ fontFamily: F.display, fontSize: "24px", fontWeight: 800, color: i === 0 ? C.gold : C.text, minWidth: "34px", textAlign: "right" }}>{p.score}</div>
             </div>
           ))}
         </div>
@@ -507,10 +520,10 @@ function AdminView({ state, dispatch }) {
 
   return (
     <div style={S.card}>
-      <div style={{ fontSize: "18px", fontWeight: 700, marginBottom: "14px" }}>Admin-panel</div>
+      <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "14px" }}>Admin-panel</div>
       <div style={{ display: "flex", gap: "5px", marginBottom: "18px", borderBottom: `1px solid ${C.border}`, paddingBottom: "14px", flexWrap: "wrap" }}>
         {tabs.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? C.border : "transparent", color: tab === t.id ? C.text : C.muted, border: `1px solid ${tab === t.id ? C.accent : "transparent"}`, borderRadius: "6px", padding: "6px 13px", cursor: "pointer", fontSize: "12px", fontWeight: 500 }}>{t.label}</button>
+          <button key={t.id} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? "rgba(34,197,94,0.12)" : "transparent", color: tab === t.id ? "#4ade80" : C.muted, border: `1px solid ${tab === t.id ? "rgba(34,197,94,0.35)" : "transparent"}`, borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontFamily: F.body, fontSize: "12px", fontWeight: 700, letterSpacing: "0.2px" }}>{t.label}</button>
         ))}
       </div>
 
@@ -580,7 +593,7 @@ function MatchesTab({ state, dispatch }) {
         const hasStats = (state.matchStats[m.id]?.players?.length || 0) > 0;
         const votesExpanded = expandedVotes.has(m.id);
         return (
-          <div key={m.id} style={{ border: `1px solid ${isOpen ? "rgba(63,185,80,0.4)" : C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px", background: isOpen ? "rgba(35,134,54,0.05)" : "transparent" }}>
+          <div key={m.id} style={{ border: `1px solid ${isOpen ? "rgba(74,222,128,0.4)" : C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px", background: isOpen ? "rgba(34,197,94,0.05)" : "transparent" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", flexWrap: "wrap" }}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: "13px" }}>{opponent(m, state.teamName)} {isHome(m, state.teamName) ? "(hj)" : "(ude)"}</div>
@@ -589,7 +602,7 @@ function MatchesTab({ state, dispatch }) {
               <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
                 {!isOpen && !isRevealed && <button style={S.btn("primary", false)} onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}>Åbn</button>}
                 {isOpen && <button style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
-                {isRevealed && <span style={{ fontSize: "11px", color: "#3fb950" }}>✓ Afsluttet</span>}
+                {isRevealed && <span style={{ fontSize: "11px", color: "#4ade80" }}>✓ Afsluttet</span>}
                 {totalVotes > 0 && (
                   <button onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
                 )}
@@ -725,7 +738,7 @@ function StatsTab({ state, dispatch }) {
               <thead><tr>{["Min.", "Scorer", "Assist", ""].map((h, i) => <th key={i} style={{ textAlign: "left", padding: "5px 6px", color: C.muted, fontSize: "10px", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}</tr></thead>
               <tbody>
                 {suggestion.map((g, i) => (
-                  <tr key={i} style={g.side === "unknown" ? { background: "rgba(212,160,23,0.06)" } : undefined}>
+                  <tr key={i} style={g.side === "unknown" ? { background: "rgba(242,181,68,0.08)" } : undefined}>
                     <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}`, color: C.muted }}>{g.minute ? `'${g.minute}` : "–"}</td>
                     <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}` }}>{g.scorer || "– (ukendt, tjek selv)"}</td>
                     <td style={{ padding: "5px 6px", borderBottom: `1px solid ${C.border}`, color: C.muted }}>{g.assist || "–"}</td>
@@ -772,7 +785,7 @@ function StatsTab({ state, dispatch }) {
             <thead><tr>{["Spiller", "Mål", "Ast", "🟨", "🟥", ""].map((h, i) => <th key={i} style={{ textAlign: i === 0 ? "left" : "center", padding: "6px 6px", color: C.muted, fontSize: "10px", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}</tr></thead>
             <tbody>
               {matchData.players.map((p, i) => (
-                <tr key={i} style={{ background: editingKey === p.name.toLowerCase() ? "rgba(88,166,255,0.05)" : "transparent" }}>
+                <tr key={i} style={{ background: editingKey === p.name.toLowerCase() ? "rgba(56,189,248,0.06)" : "transparent" }}>
                   <td style={{ padding: "7px 6px", borderBottom: `1px solid ${C.border}` }}>{p.name}</td>
                   {[p.goals, p.assists, p.yellowCards, p.redCards].map((v, j) => <td key={j} style={{ textAlign: "center", padding: "7px 6px", borderBottom: `1px solid ${C.border}`, color: v > 0 ? C.text : C.muted }}>{v || 0}</td>)}
                   <td style={{ padding: "4px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
@@ -968,12 +981,12 @@ function DbuImportTab({ state, dispatch }) {
           {!selectedTeam && <div style={{ ...S.err, marginTop: "-6px" }}>Vælg jeres hold, før kampprogrammet kan anvendes – det afgør hvornår I spiller hjemme/ude.</div>}
 
           {diff.looksLikeNewSeason ? (
-            <div style={{ fontSize: "12px", color: C.gold, marginBottom: "10px", background: "rgba(212,160,23,0.08)", border: "1px solid rgba(212,160,23,0.25)", borderRadius: "6px", padding: "10px 12px" }}>
+            <div style={{ fontSize: "12px", color: C.gold, marginBottom: "10px", background: "rgba(242,181,68,0.1)", border: "1px solid rgba(242,181,68,0.3)", borderRadius: "6px", padding: "10px 12px" }}>
               ⚠️ Ingen af de {preview.matches.length} nye kampe matcher jeres nuværende kampprogram – dette ligner en <strong>ny sæson</strong>.
             </div>
           ) : (
             <>
-              {diff.added.length > 0 && <div style={{ fontSize: "12px", color: "#3fb950", marginBottom: "4px" }}>+ {diff.added.length} ny{diff.added.length !== 1 ? "e" : ""} kamp{diff.added.length !== 1 ? "e" : ""}</div>}
+              {diff.added.length > 0 && <div style={{ fontSize: "12px", color: "#4ade80", marginBottom: "4px" }}>+ {diff.added.length} ny{diff.added.length !== 1 ? "e" : ""} kamp{diff.added.length !== 1 ? "e" : ""}</div>}
               {diff.changed.length > 0 && <div style={{ fontSize: "12px", color: C.gold, marginBottom: "4px" }}>~ {diff.changed.length} kamp{diff.changed.length !== 1 ? "e" : ""} ændret (dato/tid/spillested)</div>}
               {diff.removed.length > 0 && <div style={{ fontSize: "12px", color: C.danger, marginBottom: "4px" }}>− {diff.removed.length} kamp{diff.removed.length !== 1 ? "e" : ""} findes ikke længere på DBU</div>}
               {diff.added.length === 0 && diff.changed.length === 0 && diff.removed.length === 0 && <div style={{ fontSize: "12px", color: C.muted, marginBottom: "4px" }}>Ingen ændringer i forhold til det nuværende kampprogram.</div>}
@@ -1227,7 +1240,7 @@ function BackupTab({ state, dispatch }) {
       </div>
 
       <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: C.muted, background: C.bg, border: `1px solid ${C.border}`, borderRadius: "20px", padding: "5px 12px", marginBottom: "16px" }}>
-        <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#3fb950", display: "inline-block" }} />
+        <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#4ade80", display: "inline-block" }} />
         Sidst opdateret: <strong style={{ color: C.text, fontWeight: 600 }}>{fmtDanishTime(state._lastUpdated)}</strong>
       </div>
 
@@ -1271,7 +1284,7 @@ function BackupTab({ state, dispatch }) {
         <div style={{ fontSize: "11px", color: C.muted, marginBottom: "10px" }}>Vælg en tidligere downloadet backup.json for at gendanne alt data. Overskriver det nuværende data.</div>
         <input key={fileInputKey} type="file" accept="application/json" onChange={handleImport} style={{ fontSize: "12px", color: C.text }} />
         {pendingImport && (
-          <div style={{ marginTop: "12px", background: "rgba(218,54,51,0.08)", border: "1px solid rgba(218,54,51,0.3)", borderRadius: "8px", padding: "12px" }}>
+          <div style={{ marginTop: "12px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "8px", padding: "12px" }}>
             <div style={{ fontSize: "12px", marginBottom: "10px" }}>Fil valgt: <strong>{pendingImport.fileName}</strong>. Dette overskriver ALT nuværende data. Fortsæt?</div>
             <div style={{ display: "flex", gap: "8px" }}>
               <button style={S.btn("danger", false)} onClick={confirmImport}>Ja, overskriv med filen</button>
@@ -1330,30 +1343,35 @@ export default function App() {
   }
 
   const navBtn = (v) => ({
-    background: view === v ? C.border : "transparent", color: view === v ? C.text : C.muted,
-    border: `1px solid ${view === v ? C.accent : "transparent"}`, borderRadius: "6px",
-    padding: "6px 13px", cursor: "pointer", fontSize: "12px", fontWeight: 500,
+    background: view === v ? "rgba(34,197,94,0.12)" : "transparent", color: view === v ? "#4ade80" : C.muted,
+    border: `1px solid ${view === v ? "rgba(34,197,94,0.35)" : "transparent"}`, borderRadius: "8px",
+    padding: "7px 15px", cursor: "pointer", fontFamily: F.body, fontSize: "12px", fontWeight: 700, letterSpacing: "0.3px",
   });
 
   if (!ready) {
     return (
-      <div style={{ minHeight: "100vh", background: C.bg, color: C.muted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", fontSize: "14px", flexDirection: "column", gap: "10px" }}>
+      <div style={{ minHeight: "100vh", background: C.bg, color: C.muted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.body, fontSize: "14px", flexDirection: "column", gap: "10px" }}>
         <div>Forbinder til serveren…</div>
-        {connError && <div style={{ color: "#f85149", fontSize: "12px", maxWidth: "320px", textAlign: "center" }}>Kunne ikke forbinde til Supabase. Tjek at VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY er sat korrekt under Vercel → Settings → Environment Variables.</div>}
+        {connError && <div style={{ color: "#f87171", fontSize: "12px", maxWidth: "320px", textAlign: "center" }}>Kunne ikke forbinde til Supabase. Tjek at VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY er sat korrekt under Vercel → Settings → Environment Variables.</div>}
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", display: "flex", flexDirection: "column", alignItems: "center" }}>
+    <div style={{ minHeight: "100vh", background: C.bg, backgroundImage: PITCH_STRIPES, color: C.text, fontFamily: F.body, display: "flex", flexDirection: "column", alignItems: "center" }}>
       <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700;800&display=swap');
         * { box-sizing:border-box; margin:0; padding:0; }
-        body { background:#0d1117; }
-        input:focus,select:focus,textarea:focus { border-color:#58a6ff !important; box-shadow: 0 0 0 3px rgba(88,166,255,0.1); }
+        body { background:${C.bg}; font-family: 'Inter', system-ui, sans-serif; }
+        input:focus,select:focus,textarea:focus { border-color:${C.accent} !important; box-shadow: 0 0 0 3px rgba(34,197,94,0.15); }
         select { appearance:none; }
         /* Forhindrer iOS Safari i at zoome ind automatisk, når man trykker i et felt */
         input, select, textarea { font-size: 16px !important; }
         button { touch-action: manipulation; }
+        button:active { transform: translateY(1px); }
+        button:not(:disabled):hover { filter: brightness(1.08); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        ::selection { background: rgba(34,197,94,0.35); }
         @media (max-width: 480px) {
           .motm-numgrid { grid-template-columns: 1fr 1fr !important; }
         }
