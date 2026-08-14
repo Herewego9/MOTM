@@ -1,5 +1,10 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
+
+// ==== UDFYLD DISSE TO MED DINE EGNE SUPABASE-VÆRDIER (Settings > API) ====
+// ==== Supabase-nøgler og admin-kode læses fra miljøvariabler, IKKE fra selve koden ====
+// Sæt disse i Vercel: Settings → Environment Variables (og lokalt i en .env-fil, som
+// aldrig committes til GitHub). Se instruktioner i chatten for hvordan.
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // ==========================================================================
@@ -7,6 +12,12 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
+// Kampdata (stemmer, statistik, m.m.) er DELT mellem alle der bruger appen – ligger i Supabase.
+// "Har jeg stemt"-status er PERSONLIG for denne enhed – ligger i localStorage.
+// Bemærk: disse er kun INTERNE opbevaringsnøgler i jeres egen Supabase-database –
+// de vises aldrig for brugerne og er derfor ikke et branding-problem. De er IKKE
+// ændret her, fordi det ville få appen til at miste forbindelsen til jeres allerede
+// gemte data (den ville lede efter en ny, tom nøgle i stedet for jeres rigtige data).
 const SHARED_KEY = "st70-shared";
 const PERSONAL_KEY = "st70-voted-by-me";
 
@@ -202,6 +213,16 @@ function reducer(state, action) {
         votes: { ...state.votes, [action.matchId]: { ...prev, [key]: entry } },
         votedMatches: { ...state.votedMatches, [action.matchId]: action.player },
       };
+    }
+    case "ADMIN_VOTE": {
+      // Bruges når admin stemmer PÅ VEGNE AF en spiller uden link/mobil.
+      // Springer bevidst enheds-spærren (votedMatches) over – den gælder kun
+      // almindelige stemmer afgivet fra spillerens egen telefon.
+      const prev = state.votes[action.matchId] || {};
+      const key = action.player.toLowerCase();
+      const prevEntry = prev[key];
+      const entry = { count: (prevEntry?.count || 0) + 1, name: prevEntry?.name || action.player };
+      return { ...state, votes: { ...state.votes, [action.matchId]: { ...prev, [key]: entry } } };
     }
     case "OPEN_MATCH":
       return { ...state, openMatchId: action.matchId };
@@ -611,9 +632,49 @@ function MatchesTab({ state, dispatch }) {
               </div>
             </div>
             {votesExpanded && <MatchVotesBreakdown state={state} matchId={m.id} />}
+            {isOpen && <AdminVoteBox state={state} dispatch={dispatch} matchId={m.id} />}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Lader admin afgive en stemme PÅ VEGNE AF en spiller uden link/mobil.
+// Springer bevidst enheds-spærren over – bruges kun ved undtagelser.
+function AdminVoteBox({ state, dispatch, matchId }) {
+  const [name, setName] = useState("");
+  const [msg, setMsg] = useState(null);
+  const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
+
+  function submit() {
+    if (!name.trim()) return;
+    dispatch({ type: "ADMIN_VOTE", matchId, player: name.trim() });
+    setMsg({ type: "ok", text: `Stemme registreret for ${name.trim()}.` });
+    setName("");
+  }
+
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(null), 3000);
+    return () => clearTimeout(t);
+  }, [msg]);
+
+  return (
+    <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>Stem på vegne af nogen (intet link/mobil)</div>
+      {msg && <div style={S.ok}>{msg.text}</div>}
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+        {squad.length > 0 ? (
+          <select style={{ ...S.input, marginBottom: 0, flex: "1 1 160px" }} value={name} onChange={e => setName(e.target.value)}>
+            <option value="">— Vælg spiller —</option>
+            {squad.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        ) : (
+          <input style={{ ...S.input, marginBottom: 0, flex: "1 1 160px" }} placeholder="Spillernavn" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
+        )}
+        <button style={{ ...S.btn("primary", false) }} onClick={submit} disabled={!name.trim()}>Afgiv stemme</button>
+      </div>
     </div>
   );
 }
