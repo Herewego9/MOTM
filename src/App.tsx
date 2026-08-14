@@ -537,14 +537,20 @@ function AdminView({ state, dispatch }) {
     </div>
   );
 
-  const tabs = [{ id: "matches", label: "Kampe" }, { id: "stats", label: "Kampstat." }, { id: "squad", label: "Trup" }, { id: "laundry", label: "Vasketøj" }, { id: "backup", label: "Backup" }];
+  const tabs = [
+    { id: "matches", label: "Kampe", title: "Åbn/luk afstemninger, hent kampprogram, se stemmer" },
+    { id: "stats", label: "Kampstat.", title: "Registrér mål, assist og kort pr. kamp" },
+    { id: "squad", label: "Trup", title: "Administrer spillerliste" },
+    { id: "laundry", label: "Vasketøj", title: "Fair rotation af hvem der har vasketøjet med hjem" },
+    { id: "backup", label: "Backup", title: "Eksportér data, se arkiverede sæsoner, gendan backup" },
+  ];
 
   return (
     <div style={S.card}>
       <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "14px" }}>Admin-panel</div>
       <div style={{ display: "flex", gap: "5px", marginBottom: "18px", borderBottom: `1px solid ${C.border}`, paddingBottom: "14px", flexWrap: "wrap" }}>
         {tabs.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? "rgba(34,197,94,0.12)" : "transparent", color: tab === t.id ? "#4ade80" : C.muted, border: `1px solid ${tab === t.id ? "rgba(34,197,94,0.35)" : "transparent"}`, borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontFamily: F.body, fontSize: "12px", fontWeight: 700, letterSpacing: "0.2px" }}>{t.label}</button>
+          <button key={t.id} title={t.title} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? "rgba(34,197,94,0.12)" : "transparent", color: tab === t.id ? "#4ade80" : C.muted, border: `1px solid ${tab === t.id ? "rgba(34,197,94,0.35)" : "transparent"}`, borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontFamily: F.body, fontSize: "12px", fontWeight: 700, letterSpacing: "0.2px" }}>{t.label}</button>
         ))}
       </div>
 
@@ -590,6 +596,7 @@ function MatchesTab({ state, dispatch }) {
     <div>
       <div style={{ border: `1px solid ${C.border}`, borderRadius: "9px", marginBottom: "16px", overflow: "hidden" }}>
         <button
+          title="Hent kampprogrammet fra DBU's hjemmeside, eller opdatér det eksisterende"
           onClick={() => setDbuOpen(o => !o)}
           style={{ width: "100%", textAlign: "left", background: C.bg, border: "none", cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", color: C.text, fontSize: "13px", fontWeight: 600 }}
         >
@@ -621,14 +628,14 @@ function MatchesTab({ state, dispatch }) {
                 <div style={{ color: C.muted, fontSize: "11px", marginTop: "2px" }}>{fmtDate(m.date)} · {m.time} · {totalVotes} stemme{totalVotes !== 1 ? "r" : ""}{hasStats ? " · stat ✓" : ""}</div>
               </div>
               <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
-                {!isOpen && !isRevealed && <button style={S.btn("primary", false)} onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}>Åbn</button>}
-                {isOpen && <button style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
+                {!isOpen && !isRevealed && <button title="Åbn afstemning for denne kamp – spillerne kan nu stemme" style={S.btn("primary", false)} onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}>Åbn</button>}
+                {isOpen && <button title="Lukker afstemningen og afslører kampens MVP" style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
                 {isRevealed && <span style={{ fontSize: "11px", color: "#4ade80" }}>✓ Afsluttet</span>}
                 {totalVotes > 0 && (
-                  <button onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
+                  <button title="Vis/skjul stemmefordelingen for denne kamp" onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
                 )}
-                <ConfirmButton label="🔄 Nulstil afstemning" style={{ ...S.btn("warn", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_VOTES", matchId: m.id })} />
-                <ConfirmButton label="🗑 Nulstil kamp" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
+                <ConfirmButton label="🔄 Nulstil afstemning" title="Sletter kun stemmerne for denne kamp – statistik bevares" style={{ ...S.btn("warn", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_VOTES", matchId: m.id })} />
+                <ConfirmButton label="🗑 Nulstil kamp" title="Sletter stemmer, statistik og resultat for hele kampen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
               </div>
             </div>
             {votesExpanded && <MatchVotesBreakdown state={state} matchId={m.id} />}
@@ -850,8 +857,8 @@ function StatsTab({ state, dispatch }) {
                   <td style={{ padding: "7px 6px", borderBottom: `1px solid ${C.border}` }}>{p.name}</td>
                   {[p.goals, p.assists, p.yellowCards, p.redCards].map((v, j) => <td key={j} style={{ textAlign: "center", padding: "7px 6px", borderBottom: `1px solid ${C.border}`, color: v > 0 ? C.text : C.muted }}>{v || 0}</td>)}
                   <td style={{ padding: "4px", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-                    <button onClick={() => startEdit(p)} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "14px", padding: "8px" }}>✏️</button>
-                    <ConfirmButton label="🗑" confirmLabel="Slet" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }} onConfirm={() => handleDelete(p.name.toLowerCase())} />
+                    <button onClick={() => startEdit(p)} title="Rediger denne spillers tal" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "14px", padding: "8px" }}>✏️</button>
+                    <ConfirmButton label="🗑" confirmLabel="Slet" title="Slet denne spiller fra kampens statistik" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }} onConfirm={() => handleDelete(p.name.toLowerCase())} />
                   </td>
                 </tr>
               ))}
@@ -1056,10 +1063,10 @@ function DbuImportTab({ state, dispatch }) {
 
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px" }}>
             {!diff.looksLikeNewSeason && (
-              <button style={S.btn("primary", false)} onClick={applyImport} disabled={!selectedTeam}>Opdatér kampprogram (behold statistik)</button>
+              <button title="Gemmer det opdaterede kampprogram – eksisterende stemmer/statistik røres ikke" style={S.btn("primary", false)} onClick={applyImport} disabled={!selectedTeam}>Opdatér kampprogram (behold statistik)</button>
             )}
             {!confirmingNewSeason ? (
-              <button style={S.btn("danger", false)} onClick={() => setConfirmingNewSeason(true)} disabled={!selectedTeam}>🗑 Dette er en ny sæson – nulstil alt</button>
+              <button title="Arkiverer nuværende sæson og starter en helt ny, tom sæson" style={S.btn("danger", false)} onClick={() => setConfirmingNewSeason(true)} disabled={!selectedTeam}>🗑 Dette er en ny sæson – nulstil alt</button>
             ) : (
               <div style={{ width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px", marginTop: "4px" }}>
                 <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Den nuværende sæson arkiveres automatisk, og alt aktivt data nulstilles.</div>
@@ -1168,12 +1175,12 @@ function LaundryTab({ state, dispatch }) {
             <div style={{ fontSize: "13px", color: C.muted, marginBottom: "6px" }}>🎲 Trukket:</div>
             <div style={{ fontSize: "22px", fontWeight: 800, color: C.gold, marginBottom: "16px" }}>{candidate}</div>
             <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
-              <button style={S.btn("primary", false)} onClick={confirmAssign}>✓ Bekræft</button>
-              <button style={S.btn("secondary", false)} onClick={rollRandom}>🎲 Træk igen</button>
+              <button title="Registrerer denne spiller som vasketøjs-ansvarlig" style={S.btn("primary", false)} onClick={confirmAssign}>✓ Bekræft</button>
+              <button title="Træk en ny tilfældig spiller i stedet" style={S.btn("secondary", false)} onClick={rollRandom}>🎲 Træk igen</button>
             </div>
           </div>
         ) : (
-          <button style={S.btn("primary")} onClick={rollRandom}>🎲 Træk tilfældig spiller</button>
+          <button title="Vælger tilfældigt blandt dem der ikke har haft tøjet med for nylig" style={S.btn("primary")} onClick={rollRandom}>🎲 Træk tilfældig spiller</button>
         )}
       </div>
 
@@ -1188,7 +1195,7 @@ function LaundryTab({ state, dispatch }) {
                 <div style={{ fontSize: "13px", fontWeight: 600 }}>{e.name}</div>
                 <div style={{ fontSize: "11px", color: C.muted }}>{fmtDanishTime(e.date)}{e.matchLabel ? ` · ${e.matchLabel}` : ""}</div>
               </div>
-              <ConfirmButton label="🗑" confirmLabel="Slet" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px", flexShrink: 0 }} onConfirm={() => deleteEntry(e.id)} />
+              <ConfirmButton label="🗑" confirmLabel="Slet" title="Slet denne registrering (bruges ved fejl)" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px", flexShrink: 0 }} onConfirm={() => deleteEntry(e.id)} />
             </div>
           ))
         )}
@@ -1200,17 +1207,17 @@ function LaundryTab({ state, dispatch }) {
 // Native window.confirm() kan blive permanent blokeret af mobilbrowsere, hvis man
 // krydser "husk mit svar" af – derefter svarer den automatisk "nej" for evigt.
 // Denne knap bygger bekræftelsen ind i selve appen i stedet, så det aldrig sker.
-function ConfirmButton({ label, confirmLabel = "Ja, gør det", style, onConfirm }) {
+function ConfirmButton({ label, confirmLabel = "Ja, gør det", style, onConfirm, title }) {
   const [confirming, setConfirming] = useState(false);
   if (confirming) {
     return (
       <span style={{ display: "inline-flex", gap: "6px" }}>
-        <button style={{ ...S.btn("danger", false), fontSize: "11px" }} onClick={() => { setConfirming(false); onConfirm(); }}>{confirmLabel}</button>
-        <button style={{ ...S.btn("secondary", false), fontSize: "11px" }} onClick={() => setConfirming(false)}>Fortryd</button>
+        <button title="Bekræft handlingen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onClick={() => { setConfirming(false); onConfirm(); }}>{confirmLabel}</button>
+        <button title="Annuller, gør ingenting" style={{ ...S.btn("secondary", false), fontSize: "11px" }} onClick={() => setConfirming(false)}>Fortryd</button>
       </span>
     );
   }
-  return <button style={style} onClick={() => setConfirming(true)}>{label}</button>;
+  return <button title={title} style={style} onClick={() => setConfirming(true)}>{label}</button>;
 }
 
 function slugify(text) {
@@ -1310,9 +1317,9 @@ function BackupTab({ state, dispatch }) {
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Eksport</div>
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-          <button style={{ ...S.btn("primary", false) }} onClick={exportSeasonCsv}>📊 Sæsonstatistik (CSV)</button>
-          <button style={{ ...S.btn("primary", false) }} onClick={exportMatchesCsv}>📋 Kampresultater (CSV)</button>
-          <button style={{ ...S.btn("secondary", false) }} onClick={exportJson}>💾 Download backup.json</button>
+          <button title="Downloader spillerstatistik som CSV-fil til Excel" style={{ ...S.btn("primary", false) }} onClick={exportSeasonCsv}>📊 Sæsonstatistik (CSV)</button>
+          <button title="Downloader kampresultater og MVP-vindere som CSV-fil" style={{ ...S.btn("primary", false) }} onClick={exportMatchesCsv}>📋 Kampresultater (CSV)</button>
+          <button title="Downloader en fuld sikkerhedskopi af alt data" style={{ ...S.btn("secondary", false) }} onClick={exportJson}>💾 Download backup.json</button>
         </div>
         <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>CSV-filer åbnes direkte i Excel, Numbers eller Google Sheets.</div>
       </div>
@@ -1331,6 +1338,7 @@ function BackupTab({ state, dispatch }) {
               <ConfirmButton
                 label="🗑 Slet"
                 confirmLabel="Slet permanent"
+                title="Sletter denne arkiverede sæson permanent – kan ikke fortrydes"
                 style={{ ...S.btn("danger", false), fontSize: "11px" }}
                 onConfirm={() => dispatch({ type: "DELETE_SEASON", id: s.id })}
               />
@@ -1439,10 +1447,10 @@ export default function App() {
       `}</style>
       <div style={{ width: "100%", background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 18px", display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box", flexWrap: "wrap", gap: "8px" }}>
         <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-          <button style={navBtn("vote")} onClick={() => setView("vote")}>Stem</button>
-          <button style={navBtn("ranking")} onClick={() => setView("ranking")}>Rangliste</button>
-          <button style={navBtn("stats")} onClick={() => setView("stats")}>Statistik</button>
-          <button style={navBtn("admin")} onClick={() => setView("admin")}>Admin</button>
+          <button title="Stem på kampens MVP" style={navBtn("vote")} onClick={() => setView("vote")}>Stem</button>
+          <button title="Se sæsonens samlede point-rangliste" style={navBtn("ranking")} onClick={() => setView("ranking")}>Rangliste</button>
+          <button title="Se fuld sæsonstatistik pr. spiller" style={navBtn("stats")} onClick={() => setView("stats")}>Statistik</button>
+          <button title="Administrer kampe, statistik, trup og mere" style={navBtn("admin")} onClick={() => setView("admin")}>Admin</button>
         </div>
       </div>
       <div style={{ width: "100%", maxWidth: "600px", padding: "12px 14px 60px" }}>
