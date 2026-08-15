@@ -793,8 +793,8 @@ function StatsTab({ state, dispatch }) {
           <div style={{ marginTop: "14px", marginBottom: "10px" }}>
             <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Hvilket hold er jeres? (viser kun mål for det valgte hold)</div>
             <div style={{ display: "flex", gap: "8px" }}>
-              <button style={{ ...S.btn(side === "home" ? "primary" : "secondary", false) }} onClick={() => setSide("home")}>{rawFetch.homeTeam || "Hjemmehold"}</button>
-              <button style={{ ...S.btn(side === "away" ? "primary" : "secondary", false) }} onClick={() => setSide("away")}>{rawFetch.awayTeam || "Udehold"}</button>
+              <button style={{ ...S.btn(side === "home" ? "primary" : "secondary", false) }} onClick={() => setSide("home")}>Hjemmehold</button>
+              <button style={{ ...S.btn(side === "away" ? "primary" : "secondary", false) }} onClick={() => setSide("away")}>Udehold</button>
             </div>
           </div>
         )}
