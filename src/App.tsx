@@ -862,8 +862,7 @@ function StatsTab({ state, dispatch }) {
             {squad.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         ) : (
-          <input style={{ ...S.input, background: editingKey ? "#1c2128" : C.inputBg }} placeholder="Fx Lars Andersen" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} readOnly={!!editingKey} />
-        )}
+          <input style={S.input} placeholder="Fx Lars Andersen" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
         <div className="motm-numgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "8px", marginBottom: "12px" }}>
           {numInput("goals", "Mål 🥅")}{numInput("assists", "Assist 🎯")}{numInput("yellowCards", "Gult 🟨")}{numInput("redCards", "Rødt 🟥")}
         </div>
