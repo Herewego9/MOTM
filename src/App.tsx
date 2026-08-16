@@ -224,6 +224,34 @@ function reducer(state, action) {
       const entry = { count: (prevEntry?.count || 0) + 1, name: prevEntry?.name || action.player };
       return { ...state, votes: { ...state.votes, [action.matchId]: { ...prev, [key]: entry } } };
     }
+    case "EDIT_VOTE": {
+      // Admin retter/samler en fejlstavet stemme. Skriver man et navn der allerede
+      // har stemmer, FLETTES de to sammen (tæller lægges sammen). Skriver man et nyt
+      // navn, omdøbes stemmen bare til det.
+      const { matchId, oldKey, newName } = action;
+      const prev = state.votes[matchId] || {};
+      const oldEntry = prev[oldKey];
+      if (!oldEntry) return state;
+      const newKey = newName.trim().toLowerCase();
+      if (!newKey) return state;
+      const next = { ...prev };
+      delete next[oldKey];
+      if (newKey === oldKey) {
+        next[newKey] = { ...oldEntry, name: newName.trim() };
+      } else {
+        const existing = next[newKey];
+        next[newKey] = { count: (existing?.count || 0) + oldEntry.count, name: existing?.name || newName.trim() };
+      }
+      // Er kampen allerede afsluttet, kan rettelsen ændre hvem der reelt har flest
+      // stemmer – genberegn derfor vinderen, så statistikken forbliver korrekt.
+      let matchStats = state.matchStats;
+      if (state.revealed[matchId]) {
+        const sorted = Object.entries(next).sort((a, b) => b[1].count - a[1].count);
+        const prevMatchData = matchStats[matchId] || { players: [] };
+        matchStats = { ...matchStats, [matchId]: { ...prevMatchData, motmKey: sorted[0]?.[0] || null, motmName: sorted[0]?.[1]?.name || null } };
+      }
+      return { ...state, votes: { ...state.votes, [matchId]: next }, matchStats };
+    }
     case "OPEN_MATCH":
       return { ...state, openMatchId: action.matchId };
     case "CLOSE_MATCH": {
@@ -638,7 +666,7 @@ function MatchesTab({ state, dispatch }) {
                 <ConfirmButton label="🗑 Nulstil kamp" title="Sletter stemmer, statistik og resultat for hele kampen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
               </div>
             </div>
-            {votesExpanded && <MatchVotesBreakdown state={state} matchId={m.id} />}
+            {votesExpanded && <MatchVotesBreakdown state={state} dispatch={dispatch} matchId={m.id} />}
             {isOpen && <AdminVoteBox state={state} dispatch={dispatch} matchId={m.id} />}
           </div>
         );
@@ -793,8 +821,8 @@ function StatsTab({ state, dispatch }) {
           <div style={{ marginTop: "14px", marginBottom: "10px" }}>
             <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Hvilket hold er jeres? (viser kun mål for det valgte hold)</div>
             <div style={{ display: "flex", gap: "8px" }}>
-              <button style={{ ...S.btn(side === "home" ? "primary" : "secondary", false) }} onClick={() => setSide("home")}>Hjemmehold</button>
-              <button style={{ ...S.btn(side === "away" ? "primary" : "secondary", false) }} onClick={() => setSide("away")}>Udehold</button>
+              <button style={{ ...S.btn(side === "home" ? "primary" : "secondary", false) }} onClick={() => setSide("home")}>{rawFetch.homeTeam || "Hjemmehold"}</button>
+              <button style={{ ...S.btn(side === "away" ? "primary" : "secondary", false) }} onClick={() => setSide("away")}>{rawFetch.awayTeam || "Udehold"}</button>
             </div>
           </div>
         )}
@@ -1087,15 +1115,46 @@ function DbuImportTab({ state, dispatch }) {
 
 
 // Genbrugelig stemmefordeling for én kamp (bruges inline i Kampe-fanen)
-function MatchVotesBreakdown({ state, matchId }) {
+function MatchVotesBreakdown({ state, dispatch, matchId }) {
   const matchVotes = state.votes[matchId] || {};
   const total = Object.values(matchVotes).reduce((a, b) => a + b.count, 0);
   const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
+  const [editingKey, setEditingKey] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
+
+  function startEdit(key, currentName) {
+    setEditingKey(key);
+    setEditValue(currentName);
+  }
+  function saveEdit() {
+    if (!editValue.trim()) return;
+    dispatch({ type: "EDIT_VOTE", matchId, oldKey: editingKey, newName: editValue.trim() });
+    setEditingKey(null);
+  }
+
   if (!sorted.length) return <div style={{ fontSize: "12px", color: C.muted, padding: "8px 0" }}>Ingen stemmer endnu.</div>;
   return (
     <div style={{ paddingTop: "10px" }}>
+      <div style={{ fontSize: "10px", color: C.muted, marginBottom: "8px" }}>Fejlstavet? Tryk ✏️ og skriv det korrekte navn – findes navnet allerede, flettes stemmerne automatisk sammen.</div>
       {sorted.map(([key, entry], i) => {
         const pct = total ? Math.round(entry.count / total * 100) : 0;
+        if (editingKey === key) {
+          return (
+            <div key={key} style={{ display: "flex", gap: "6px", alignItems: "center", marginBottom: "8px" }}>
+              {squad.length > 0 ? (
+                <select style={{ ...S.input, marginBottom: 0, flex: 1 }} value={editValue} onChange={e => setEditValue(e.target.value)}>
+                  <option value={entry.name}>{entry.name}</option>
+                  {squad.filter(n => n.toLowerCase() !== key).map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              ) : (
+                <input style={{ ...S.input, marginBottom: 0, flex: 1 }} value={editValue} onChange={e => setEditValue(e.target.value)} onKeyDown={e => e.key === "Enter" && saveEdit()} autoFocus />
+              )}
+              <button title="Gem" style={{ ...S.btn("primary", false), fontSize: "11px" }} onClick={saveEdit}>✓</button>
+              <button title="Annuller" style={{ ...S.btn("secondary", false), fontSize: "11px" }} onClick={() => setEditingKey(null)}>✕</button>
+            </div>
+          );
+        }
         return (
           <div key={key} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "5px" }}>
             <div style={{ fontSize: "12px", color: i === 0 ? C.gold : C.muted, width: "16px" }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`}</div>
@@ -1104,6 +1163,7 @@ function MatchVotesBreakdown({ state, matchId }) {
               <div style={{ height: "3px", background: i === 0 ? C.gold : C.border, width: `${pct}%`, borderRadius: "2px", marginTop: "3px" }} />
             </div>
             <div style={{ fontSize: "11px", color: C.muted }}>{entry.count} ({pct}%)</div>
+            <button title="Ret eller flet denne stemme" onClick={() => startEdit(key, entry.name)} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.blue, fontSize: "13px", padding: "6px" }}>✏️</button>
           </div>
         );
       })}
