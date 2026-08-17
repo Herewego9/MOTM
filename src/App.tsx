@@ -582,7 +582,7 @@ function RankingView({ state }) {
 // ============================================================
 // ADMIN VIEW
 // ============================================================
-function AdminView({ state, dispatch }) {
+function AdminView({ state, dispatch, statsMatchId, setStatsMatchId }) {
   const [authed, setAuthed] = useState(false);
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState("");
@@ -621,7 +621,7 @@ function AdminView({ state, dispatch }) {
       </div>
 
       {tab === "matches" && <MatchesTab state={state} dispatch={dispatch} />}
-      {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} />}
+      {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} selMatch={statsMatchId} setSelMatch={setStatsMatchId} />}
       {tab === "squad"   && <SquadTab   state={state} dispatch={dispatch} />}
       {tab === "laundry" && <LaundryTab state={state} dispatch={dispatch} />}
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
@@ -753,8 +753,7 @@ function AdminVoteBox({ state, dispatch, matchId }) {
 }
 
 // ---- STATS TAB ----
-function StatsTab({ state, dispatch }) {
-  const [selMatch, setSelMatch] = useState(state.matches[0]?.id);
+function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
   const [form, setForm] = useState({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 });
   const [editingKey, setEditingKey] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -768,7 +767,9 @@ function StatsTab({ state, dispatch }) {
   const [suggestion, setSuggestion] = useState(null); // [{minute, scorer, assist, side}]
   const [applyMsg, setApplyMsg] = useState(null);
 
-  const matchData = state.matchStats[selMatch] || { players: [] };
+  // Fald tilbage til første kamp, hvis intet er valgt endnu (fx allerførste besøg i fanen).
+  const activeMatch = selMatch ?? state.matches[0]?.id;
+  const matchData = state.matchStats[activeMatch] || { players: [] };
   const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
 
   function startEdit(p) { setForm({ name: p.name, goals: p.goals, assists: p.assists, yellowCards: p.yellowCards, redCards: p.redCards }); setEditingKey(p.name.toLowerCase()); setErr(""); }
@@ -776,14 +777,14 @@ function StatsTab({ state, dispatch }) {
     if (!form.name.trim()) { setErr("Angiv spillernavn."); return; }
     const player = { name: form.name.trim(), goals: +form.goals, assists: +form.assists, yellowCards: +form.yellowCards, redCards: +form.redCards };
     if (editingKey) {
-      dispatch({ type: "RENAME_AND_UPSERT_PLAYER", matchId: selMatch, oldKey: editingKey, player });
+      dispatch({ type: "RENAME_AND_UPSERT_PLAYER", matchId: activeMatch, oldKey: editingKey, player });
     } else {
-      dispatch({ type: "UPSERT_PLAYER", matchId: selMatch, player });
+      dispatch({ type: "UPSERT_PLAYER", matchId: activeMatch, player });
     }
     setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setEditingKey(null);
     setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
-  function handleDelete(playerKey) { dispatch({ type: "DELETE_PLAYER", matchId: selMatch, playerKey }); }
+  function handleDelete(playerKey) { dispatch({ type: "DELETE_PLAYER", matchId: activeMatch, playerKey }); }
 
   async function handleFetchSuggestion() {
     setFetchErr(""); setRawFetch(null); setSuggestion(null); setApplyMsg(null); setSide(null);
@@ -795,7 +796,7 @@ function StatsTab({ state, dispatch }) {
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampinfo.");
       setRawFetch(data);
       // Gæt hvilket hold der er "vores" ved at se om holdnavnet matcher noget i spillertruppen/kamplisten.
-      const match = state.matches.find(m => m.id === selMatch);
+      const match = state.matches.find(m => m.id === activeMatch);
       const guessHome = match && isHome(match, state.teamName);
       setSide(guessHome ? "home" : "away");
     } catch (e) {
@@ -829,7 +830,7 @@ function StatsTab({ state, dispatch }) {
       const existing = matchData.players.find(p => p.name.toLowerCase() === player.name.toLowerCase());
       return { name: player.name, goals: player.goals, assists: player.assists, yellowCards: existing?.yellowCards || 0, redCards: existing?.redCards || 0 };
     });
-    dispatch({ type: "UPSERT_PLAYERS", matchId: selMatch, players });
+    dispatch({ type: "UPSERT_PLAYERS", matchId: activeMatch, players });
     setApplyMsg({ type: "ok", text: `${players.length} spillere opdateret ud fra forslaget. Tjek tabellen nedenfor og ret evt. gule/røde kort manuelt.` });
     setRawFetch(null); setSuggestion(null); setSide(null);
     setDbuUrl("");
@@ -848,7 +849,7 @@ function StatsTab({ state, dispatch }) {
   return (
     <div>
       <label style={S.label}>Kamp</label>
-      <select style={S.input} value={selMatch} onChange={e => { setSelMatch(+e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setSuggestion(null); }}>
+      <select style={S.input} value={selMatch ?? state.matches[0]?.id} onChange={e => { setSelMatch(+e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setSuggestion(null); }}>
         {state.matches.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>)}
       </select>
 
@@ -1478,6 +1479,8 @@ export default function App() {
   const [state, setStateRaw] = useState(() => ({ ...INIT_SHARED, ...loadPersonal() }));
   const [ready, setReady] = useState(false);
   const [connError, setConnError] = useState(false);
+  // Holdes her (ikke inde i StatsTab), så det IKKE nulstilles ved faneskift.
+  const [statsMatchId, setStatsMatchId] = useState(null);
 
   // Hent delt data ved opstart + lyt til ændringer fra andre enheder (live).
   useEffect(() => {
@@ -1561,7 +1564,7 @@ export default function App() {
         {view === "vote"    && <VoteView    state={state} dispatch={dispatch} />}
         {view === "ranking" && <RankingView state={state} />}
         {view === "stats"   && <StatsView   state={state} />}
-        {view === "admin"   && <AdminView   state={state} dispatch={dispatch} />}
+        {view === "admin"   && <AdminView   state={state} dispatch={dispatch} statsMatchId={statsMatchId} setStatsMatchId={setStatsMatchId} />}
       </div>
     </div>
   );
