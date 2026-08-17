@@ -40,30 +40,39 @@ const INIT = { ...INIT_SHARED, ...INIT_PERSONAL };
 
 // Ranglistepoint: MOTM tæller mest, derefter mål, derefter assist.
 const WEIGHTS = { motm: 5, goal: 3, assist: 2, yellowCard: -1, redCard: -3 };
+// Loft for hvor mange point mål+assist maksimalt må give I ÉN KAMP. Sat til motm-1,
+// så kampens spiller ALTID får flest point for netop den kamp – uanset hvor mange mål
+// en anden spiller scorer. Kort trækkes stadig fra ovenpå, uden loft (straf skal virke fuldt ud).
+const MAX_GOAL_ASSIST_POINTS_PER_MATCH = WEIGHTS.motm - 1;
 
 function deriveSeasonStats(matchStats) {
   const out = {};
   Object.values(matchStats).forEach(({ players, motmKey, motmName }) => {
     (players || []).forEach(p => {
       const k = p.name.toLowerCase();
-      if (!out[k]) out[k] = { name: p.name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0 };
+      if (!out[k]) out[k] = { name: p.name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
       out[k].matchesPlayed += 1;
       out[k].goals       += p.goals || 0;
       out[k].assists     += p.assists || 0;
       out[k].yellowCards += p.yellowCards || 0;
       out[k].redCards    += p.redCards || 0;
+      // Point for netop DENNE kamp – loftet, så mål/assist aldrig kan overgå kampens spiller.
+      const rawGoalAssist = (p.goals || 0) * WEIGHTS.goal + (p.assists || 0) * WEIGHTS.assist;
+      const cappedGoalAssist = Math.min(rawGoalAssist, MAX_GOAL_ASSIST_POINTS_PER_MATCH);
+      const cardPenalty = (p.yellowCards || 0) * WEIGHTS.yellowCard + (p.redCards || 0) * WEIGHTS.redCard;
+      out[k].score += cappedGoalAssist + cardPenalty;
     });
     if (motmKey) {
-      if (!out[motmKey]) out[motmKey] = { name: motmName || motmKey, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0 };
+      if (!out[motmKey]) out[motmKey] = { name: motmName || motmKey, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
       out[motmKey].motmWins += 1;
+      out[motmKey].score += WEIGHTS.motm;
     }
   });
   return out;
 }
 
 function scorePlayer(p) {
-  return p.motmWins * WEIGHTS.motm + p.goals * WEIGHTS.goal + p.assists * WEIGHTS.assist
-    + (p.yellowCards || 0) * WEIGHTS.yellowCard + (p.redCards || 0) * WEIGHTS.redCard;
+  return p.score || 0;
 }
 
 // ---- Designsystem: "Matchday" – banegrøn nat, scoreboard-typografi ----
@@ -283,6 +292,34 @@ function reducer(state, action) {
       const key = player.name.toLowerCase();
       const exists = prevData.players.some(p => p.name.toLowerCase() === key);
       const newPlayers = exists ? prevData.players.map(p => p.name.toLowerCase() === key ? { ...p, ...player } : p) : [...prevData.players, player];
+      return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
+    }
+    case "RENAME_AND_UPSERT_PLAYER": {
+      // Bruges når admin retter en spillers NAVN under redigering (fx "Ukendt spiller" → korrekt navn).
+      // Fjerner den gamle række og opdaterer/opretter den nye i ét samlet trin.
+      const { matchId, oldKey, player } = action;
+      const prevData = state.matchStats[matchId] || { players: [], motmKey: null };
+      const newKey = player.name.toLowerCase();
+      if (oldKey === newKey) {
+        const newPlayers = prevData.players.map(p => p.name.toLowerCase() === oldKey ? { ...p, ...player } : p);
+        return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
+      }
+      let newPlayers = prevData.players.filter(p => p.name.toLowerCase() !== oldKey);
+      const existingIdx = newPlayers.findIndex(p => p.name.toLowerCase() === newKey);
+      if (existingIdx >= 0) {
+        // Flettes ind i en eksisterende spiller i samme kamp – læg tallene sammen i
+        // stedet for at overskrive, så ingen registreret statistik går tabt.
+        const ex = newPlayers[existingIdx];
+        newPlayers[existingIdx] = {
+          name: ex.name,
+          goals: (ex.goals || 0) + (player.goals || 0),
+          assists: (ex.assists || 0) + (player.assists || 0),
+          yellowCards: (ex.yellowCards || 0) + (player.yellowCards || 0),
+          redCards: (ex.redCards || 0) + (player.redCards || 0),
+        };
+      } else {
+        newPlayers = [...newPlayers, player];
+      }
       return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
     }
     case "UPSERT_PLAYERS": {
@@ -514,8 +551,9 @@ function RankingView({ state }) {
       ) : (
         <div style={S.card}>
           <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>🏅 {archived ? archived.label : "Sæsonens rangliste"}</div>
-          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px" }}>
-            Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort
+          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px", lineHeight: 1.6 }}>
+            Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort.<br />
+            Mål/assist kan højst give {MAX_GOAL_ASSIST_POINTS_PER_MATCH} point i én kamp – kampens spiller-titlen giver derfor altid flest point den kamp.
           </div>
           {players.map((p, i) => (
             <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
@@ -736,7 +774,12 @@ function StatsTab({ state, dispatch }) {
   function startEdit(p) { setForm({ name: p.name, goals: p.goals, assists: p.assists, yellowCards: p.yellowCards, redCards: p.redCards }); setEditingKey(p.name.toLowerCase()); setErr(""); }
   function handleSave() {
     if (!form.name.trim()) { setErr("Angiv spillernavn."); return; }
-    dispatch({ type: "UPSERT_PLAYER", matchId: selMatch, player: { name: form.name.trim(), goals: +form.goals, assists: +form.assists, yellowCards: +form.yellowCards, redCards: +form.redCards } });
+    const player = { name: form.name.trim(), goals: +form.goals, assists: +form.assists, yellowCards: +form.yellowCards, redCards: +form.redCards };
+    if (editingKey) {
+      dispatch({ type: "RENAME_AND_UPSERT_PLAYER", matchId: selMatch, oldKey: editingKey, player });
+    } else {
+      dispatch({ type: "UPSERT_PLAYER", matchId: selMatch, player });
+    }
     setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setEditingKey(null);
     setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
@@ -854,6 +897,7 @@ function StatsTab({ state, dispatch }) {
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>{editingKey ? "Rediger spiller" : "Tilføj spiller"}</div>
+        {editingKey && <div style={{ fontSize: "11px", color: C.muted, marginBottom: "10px", marginTop: "-4px" }}>Du kan også rette navnet. Findes det nye navn allerede i kampen, lægges tallene sammen.</div>}
         {err && <div style={S.err}>{err}</div>}
         <label style={S.label}>Spillernavn</label>
         {squad.length > 0 && !editingKey ? (
@@ -863,6 +907,7 @@ function StatsTab({ state, dispatch }) {
           </select>
         ) : (
           <input style={S.input} placeholder="Fx Lars Andersen" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+        )}
         <div className="motm-numgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "8px", marginBottom: "12px" }}>
           {numInput("goals", "Mål 🥅")}{numInput("assists", "Assist 🎯")}{numInput("yellowCards", "Gult 🟨")}{numInput("redCards", "Rødt 🟥")}
         </div>
