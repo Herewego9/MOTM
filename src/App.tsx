@@ -582,7 +582,7 @@ function RankingView({ state }) {
 // ============================================================
 // ADMIN VIEW
 // ============================================================
-function AdminView({ state, dispatch, statsMatchId, setStatsMatchId }) {
+function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatchId, setLaundryMatchId }) {
   const [authed, setAuthed] = useState(false);
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState("");
@@ -623,7 +623,7 @@ function AdminView({ state, dispatch, statsMatchId, setStatsMatchId }) {
       {tab === "matches" && <MatchesTab state={state} dispatch={dispatch} />}
       {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} selMatch={statsMatchId} setSelMatch={setStatsMatchId} />}
       {tab === "squad"   && <SquadTab   state={state} dispatch={dispatch} />}
-      {tab === "laundry" && <LaundryTab state={state} dispatch={dispatch} />}
+      {tab === "laundry" && <LaundryTab state={state} dispatch={dispatch} matchId={laundryMatchId} setMatchId={setLaundryMatchId} />}
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
 
       <div style={{ marginTop: "22px", paddingTop: "14px", borderTop: `1px solid ${C.border}` }}>
@@ -1217,11 +1217,11 @@ function MatchVotesBreakdown({ state, dispatch, matchId }) {
 }
 
 // ---- VASKETØJ TAB ----
-function LaundryTab({ state, dispatch }) {
+function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   const [candidate, setCandidate] = useState(null);
   const [msg, setMsg] = useState(null);
   const matchesSorted = [...(state.matches || [])].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-  const [matchId, setMatchId] = useState(matchesSorted[0]?.id || "");
+  const activeMatchId = matchId || matchesSorted[0]?.id || "";
 
   const squad = collectKnownPlayers(state);
   const pool = computeLaundryPool(squad, state.laundryHistory);
@@ -1241,7 +1241,7 @@ function LaundryTab({ state, dispatch }) {
 
   function confirmAssign() {
     if (!candidate) return;
-    dispatch({ type: "ASSIGN_LAUNDRY", name: candidate, matchId: matchId || null, matchLabel: matchId ? matchLabelFor(matchId) : null });
+    dispatch({ type: "ASSIGN_LAUNDRY", name: candidate, matchId: activeMatchId || null, matchLabel: activeMatchId ? matchLabelFor(activeMatchId) : null });
     setMsg({ type: "ok", text: `${candidate} er registreret som denne omgangs vasketøjs-ansvarlig.` });
     setCandidate(null);
   }
@@ -1266,7 +1266,7 @@ function LaundryTab({ state, dispatch }) {
         {matchesSorted.length > 0 && (
           <>
             <label style={S.label}>Kamp (valgfrit, men anbefalet)</label>
-            <select style={S.input} value={matchId} onChange={e => setMatchId(e.target.value)}>
+            <select style={S.input} value={activeMatchId} onChange={e => setMatchId(e.target.value)}>
               <option value="">— Ingen bestemt kamp —</option>
               {matchesSorted.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>)}
             </select>
@@ -1479,8 +1479,9 @@ export default function App() {
   const [state, setStateRaw] = useState(() => ({ ...INIT_SHARED, ...loadPersonal() }));
   const [ready, setReady] = useState(false);
   const [connError, setConnError] = useState(false);
-  // Holdes her (ikke inde i StatsTab), så det IKKE nulstilles ved faneskift.
+  // Holdes her (ikke inde i StatsTab/LaundryTab), så det IKKE nulstilles ved faneskift.
   const [statsMatchId, setStatsMatchId] = useState(null);
+  const [laundryMatchId, setLaundryMatchId] = useState("");
 
   // Hent delt data ved opstart + lyt til ændringer fra andre enheder (live).
   useEffect(() => {
@@ -1564,7 +1565,7 @@ export default function App() {
         {view === "vote"    && <VoteView    state={state} dispatch={dispatch} />}
         {view === "ranking" && <RankingView state={state} />}
         {view === "stats"   && <StatsView   state={state} />}
-        {view === "admin"   && <AdminView   state={state} dispatch={dispatch} statsMatchId={statsMatchId} setStatsMatchId={setStatsMatchId} />}
+        {view === "admin"   && <AdminView   state={state} dispatch={dispatch} statsMatchId={statsMatchId} setStatsMatchId={setStatsMatchId} laundryMatchId={laundryMatchId} setLaundryMatchId={setLaundryMatchId} />}
       </div>
     </div>
   );
