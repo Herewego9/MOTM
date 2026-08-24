@@ -190,17 +190,20 @@ function collectKnownPlayers(state) {
   return [...names.values()].sort((a, b) => a.localeCompare(b, "da"));
 }
 
-function computeLaundryPool(squadNames, laundryHistory) {
+function computeLaundryPool(squadNames, laundryHistory, excludeName) {
   if (!squadNames || !squadNames.length) return [];
+  // Kampens spiller for den valgte kamp må ikke selv kunne trækkes til vasketøj den gang.
+  const eligibleSquad = excludeName ? squadNames.filter(n => n.toLowerCase() !== excludeName.toLowerCase()) : squadNames;
+  if (!eligibleSquad.length) return [];
   const sorted = [...(laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
   const recent = new Set();
   for (const entry of sorted) {
     if (recent.has(entry.name)) break; // ramt en tidligere runde – stop her
     recent.add(entry.name);
-    if (recent.size >= squadNames.length) break; // hele truppen er lige dækket
+    if (recent.size >= eligibleSquad.length) break; // alle kvalificerede er lige dækket
   }
-  const pool = squadNames.filter(n => !recent.has(n));
-  return pool.length ? pool : squadNames; // alle har haft en tur → ny runde starter
+  const pool = eligibleSquad.filter(n => !recent.has(n));
+  return pool.length ? pool : eligibleSquad; // alle (undtagen MVP) har haft en tur → ny runde starter
 }
 
 // ============================================================
@@ -1224,7 +1227,8 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   const activeMatchId = matchId || matchesSorted[0]?.id || "";
 
   const squad = collectKnownPlayers(state);
-  const pool = computeLaundryPool(squad, state.laundryHistory);
+  const matchMotmName = state.matchStats[activeMatchId]?.motmName || null;
+  const pool = computeLaundryPool(squad, state.laundryHistory, matchMotmName);
   const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
 
   function matchLabelFor(id) {
@@ -1262,6 +1266,7 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>
           {pool.length} af {squad.length} er stadig med i denne runde
         </div>
+        {matchMotmName && <div style={{ fontSize: "11px", color: C.gold, marginBottom: "10px", marginTop: "-6px" }}>⭐ {matchMotmName} er kampens spiller og er fritaget for vasketøj denne gang</div>}
 
         {matchesSorted.length > 0 && (
           <>
