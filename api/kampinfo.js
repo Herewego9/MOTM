@@ -95,8 +95,10 @@ export default async function handler(req, res) {
     });
     goals.sort((a, b) => parseInt(a.minute, 10) - parseInt(b.minute, 10));
 
-    if (!goals.length) {
-      return res.status(422).json({ error: "Fandt ingen mål på siden. Kampen er måske ikke afviklet endnu, eller endte 0-0 (så er der ikke noget at hente)." });
+    // OBS: Vi fejler bevidst IKKE, bare fordi der ingen mål er (0-0-kamp, eller mål/assist
+    // endnu ikke registreret af DBU). Truppen (holdopstillingerne) skal stadig kunne hentes.
+    if (!Object.keys(squads).length && !goals.length) {
+      return res.status(422).json({ error: "Fandt hverken holdopstilling eller mål på siden. Kampen er måske ikke afviklet endnu." });
     }
 
     res.status(200).json({ homeTeam, awayTeam, squads, goals });
