@@ -1051,6 +1051,32 @@ function DbuImportTab({ state, dispatch }) {
   const [teamId, setTeamId] = useState(state.dbuTeamId || "");
   const hasApiSettings = !!(state.dbuApiKey && state.dbuPoolId && state.dbuTeamId);
 
+  const [teamList, setTeamList] = useState(null); // [{teamId, teamName, divisionName, poolId, poolName, rowName}]
+  const [findingTeams, setFindingTeams] = useState(false);
+  const [teamErr, setTeamErr] = useState("");
+
+  async function findMyTeams() {
+    setTeamErr(""); setTeamList(null);
+    if (!apiKey.trim()) { setTeamErr("Indsæt API-nøglen først."); return; }
+    setFindingTeams(true);
+    try {
+      const res = await fetch(`/api/dbu-teams?apiKey=${encodeURIComponent(apiKey.trim())}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Kunne ikke hente holdliste.");
+      setTeamList(data.teams);
+    } catch (e) {
+      setTeamErr(e.message || "Noget gik galt.");
+    } finally {
+      setFindingTeams(false);
+    }
+  }
+
+  function pickTeam(t) {
+    setPoolId(String(t.poolId));
+    setTeamId(String(t.teamId));
+    setTeamList(null);
+  }
+
   function saveApiSettings() {
     dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: apiKey.trim(), poolId: poolId.trim(), teamId: teamId.trim() });
     setMsg({ type: "ok", text: "API-indstillinger gemt." });
@@ -1142,10 +1168,29 @@ function DbuImportTab({ state, dispatch }) {
         {apiSettingsOpen && (
           <div style={{ padding: "14px", borderTop: `1px solid ${C.border}` }}>
             <div style={{ fontSize: "11px", color: C.muted, marginBottom: "12px", lineHeight: 1.6 }}>
-              Find jeres API-nøgle i KlubOffice under <strong style={{ color: C.text }}>Klubben → "KlubOffice - Data"</strong>. Pulje-id og Hold-id findes samme sted. Med disse udfyldt kan I hente kampprogrammet direkte som struktureret data i stedet for at indsætte et link.
+              Find jeres API-nøgle i KlubOffice under <strong style={{ color: C.text }}>Klubben → "KlubOffice - Data"</strong>. Indsæt kun API-nøglen, og klik "Find mine hold" – så behøver I ikke selv lede efter Pulje-id/Hold-id.
             </div>
             <label style={S.label}>API-nøgle</label>
             <input style={S.input} type="password" placeholder="Klubbens API-nøgle" value={apiKey} onChange={e => setApiKey(e.target.value)} />
+
+            {teamErr && <div style={S.err}>{teamErr}</div>}
+            <button style={{ ...S.btn(findingTeams ? "secondary" : "primary"), marginBottom: "12px" }} onClick={findMyTeams} disabled={findingTeams || !apiKey.trim()}>{findingTeams ? "Søger…" : "🔍 Find mine hold"}</button>
+
+            {teamList && (
+              <div style={{ marginBottom: "12px" }}>
+                {teamList.map(t => (
+                  <button
+                    key={t.teamId}
+                    onClick={() => pickTeam(t)}
+                    style={{ display: "block", width: "100%", textAlign: "left", background: C.surfaceRaised, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "10px 12px", marginBottom: "6px", cursor: "pointer", color: C.text }}
+                  >
+                    <div style={{ fontSize: "13px", fontWeight: 700 }}>{t.teamName} <span style={{ color: C.muted, fontWeight: 400 }}>· {t.divisionName}</span></div>
+                    <div style={{ fontSize: "11px", color: C.muted }}>{t.rowName || t.poolName}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <label style={S.label}>Pulje-id</label>
             <input style={S.input} placeholder="Fx 135" value={poolId} onChange={e => setPoolId(e.target.value)} />
             <label style={S.label}>Hold-id</label>
