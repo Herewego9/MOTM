@@ -32,6 +32,7 @@ const INIT_SHARED = {
   laundryHistory: [], // Hvem har haft spilletøjet med hjem til vask, og hvornår
   teamName: null, // Sættes automatisk ud fra DBU-kampprogrammet – ingen hardkodede holdnavne
   competition: null, // Række/turnering, sættes automatisk fra DBU
+  dbuApiKey: "", dbuPoolId: "", dbuTeamId: "", // Valgfri officiel DBU API-adgang (mere pålideligt end skrabning)
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -347,6 +348,8 @@ function reducer(state, action) {
     }
     case "SET_SQUAD":
       return { ...state, squadNames: [...action.names].sort((a, b) => a.localeCompare(b, "da")) };
+    case "SET_DBU_API_SETTINGS":
+      return { ...state, dbuApiKey: action.apiKey || "", dbuPoolId: action.poolId || "", dbuTeamId: action.teamId || "" };
     case "SET_MATCHES":
       // Bruges ved opdatering INDEN FOR samme sæson – fx et tidspunkt der ændres.
       // Stemmer/statistik rører vi ikke, de er koblet til kampens DBU-nummer.
@@ -1035,22 +1038,32 @@ function detectOwnTeam(matches) {
 function DbuImportTab({ state, dispatch }) {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState(null); // { teamName, competition, matches }
+  const [preview, setPreview] = useState(null); // { teamName, competition, matches, source }
   const [selectedTeam, setSelectedTeam] = useState("");
   const [seasonLabel, setSeasonLabel] = useState(`Sæson ${new Date().getFullYear()}`);
   const [confirmingNewSeason, setConfirmingNewSeason] = useState(false);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState(null);
 
-  async function handleFetch() {
+  const [apiSettingsOpen, setApiSettingsOpen] = useState(false);
+  const [apiKey, setApiKey] = useState(state.dbuApiKey || "");
+  const [poolId, setPoolId] = useState(state.dbuPoolId || "");
+  const [teamId, setTeamId] = useState(state.dbuTeamId || "");
+  const hasApiSettings = !!(state.dbuApiKey && state.dbuPoolId && state.dbuTeamId);
+
+  function saveApiSettings() {
+    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: apiKey.trim(), poolId: poolId.trim(), teamId: teamId.trim() });
+    setMsg({ type: "ok", text: "API-indstillinger gemt." });
+  }
+
+  async function fetchFrom(fetchUrl) {
     setErr(""); setMsg(null); setPreview(null); setSelectedTeam("");
-    if (!url.trim() || !/dbu\.dk/i.test(url)) { setErr("Indsæt et gyldigt DBU-link (skal indeholde dbu.dk)."); return; }
     setLoading(true);
     try {
-      const res = await fetch(`/api/kampprogram?url=${encodeURIComponent(url.trim())}`);
+      const res = await fetch(fetchUrl);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampprogrammet.");
-      if (!data.matches || !data.matches.length) throw new Error("Fandt ingen kampe på siden.");
+      if (!data.matches || !data.matches.length) throw new Error("Fandt ingen kampe.");
       setPreview(data);
       setSelectedTeam(detectOwnTeam(data.matches) || "");
     } catch (e) {
@@ -1058,6 +1071,16 @@ function DbuImportTab({ state, dispatch }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleFetch() {
+    if (!url.trim() || !/dbu\.dk/i.test(url)) { setErr("Indsæt et gyldigt DBU-link (skal indeholde dbu.dk)."); return; }
+    fetchFrom(`/api/kampprogram?url=${encodeURIComponent(url.trim())}`);
+  }
+
+  function handleFetchOfficial() {
+    if (!hasApiSettings) return;
+    fetchFrom(`/api/kampprogram?apiKey=${encodeURIComponent(state.dbuApiKey)}&poolId=${encodeURIComponent(state.dbuPoolId)}&teamId=${encodeURIComponent(state.dbuTeamId)}`);
   }
 
   // Alle holdnavne der optræder i kampene – bruges som valgmuligheder, hvis auto-genkendelsen skal rettes.
@@ -1107,14 +1130,43 @@ function DbuImportTab({ state, dispatch }) {
       {err && <div style={S.err}>{err}</div>}
       {msg && <div style={S.ok}>{msg.text}</div>}
 
-      <label style={S.label}>DBU kampprogram-link</label>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: "9px", marginBottom: "16px", overflow: "hidden" }}>
+        <button
+          title="Indstil officiel DBU API-adgang – mere pålideligt end at hente fra et link"
+          onClick={() => setApiSettingsOpen(o => !o)}
+          style={{ width: "100%", textAlign: "left", background: C.bg, border: "none", cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", color: C.text, fontSize: "13px", fontWeight: 600 }}
+        >
+          <span>🔑 Officiel DBU API (valgfrit, mere pålideligt) {hasApiSettings && <span style={{ color: "#4ade80", fontSize: "11px", fontWeight: 700 }}>· Opsat</span>}</span>
+          <span style={{ color: C.muted, fontSize: "11px" }}>{apiSettingsOpen ? "▲" : "▼"}</span>
+        </button>
+        {apiSettingsOpen && (
+          <div style={{ padding: "14px", borderTop: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: "11px", color: C.muted, marginBottom: "12px", lineHeight: 1.6 }}>
+              Find jeres API-nøgle i KlubOffice under <strong style={{ color: C.text }}>Klubben → "KlubOffice - Data"</strong>. Pulje-id og Hold-id findes samme sted. Med disse udfyldt kan I hente kampprogrammet direkte som struktureret data i stedet for at indsætte et link.
+            </div>
+            <label style={S.label}>API-nøgle</label>
+            <input style={S.input} type="password" placeholder="Klubbens API-nøgle" value={apiKey} onChange={e => setApiKey(e.target.value)} />
+            <label style={S.label}>Pulje-id</label>
+            <input style={S.input} placeholder="Fx 135" value={poolId} onChange={e => setPoolId(e.target.value)} />
+            <label style={S.label}>Hold-id</label>
+            <input style={S.input} placeholder="Fx 502134" value={teamId} onChange={e => setTeamId(e.target.value)} />
+            <button style={S.btn("secondary", false)} onClick={saveApiSettings}>Gem indstillinger</button>
+          </div>
+        )}
+      </div>
+
+      {hasApiSettings && (
+        <button style={{ ...S.btn(loading ? "secondary" : "primary"), marginBottom: "16px" }} onClick={handleFetchOfficial} disabled={loading}>{loading ? "Henter…" : "🔑 Hent via officielt API"}</button>
+      )}
+
+      <label style={S.label}>Eller indsæt DBU kampprogram-link</label>
       <input style={S.input} placeholder="https://dbu.dk/resultater/hold/.../kampprogram" value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handleFetch()} />
       <button style={S.btn(loading ? "secondary" : "primary")} onClick={handleFetch} disabled={loading}>{loading ? "Henter…" : "Hent kampprogram"}</button>
 
       {preview && (
         <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginTop: "16px" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "10px" }}>
-            {preview.competition ? preview.competition : "Kampprogram"} — {preview.matches.length} kampe fundet
+            {preview.competition ? preview.competition : "Kampprogram"} — {preview.matches.length} kampe fundet {preview.source === "official-api" && <span style={{ color: "#4ade80" }}>· via officielt API</span>}
           </div>
 
           <label style={S.label}>Jeres hold</label>
