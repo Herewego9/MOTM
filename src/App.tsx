@@ -1036,6 +1036,8 @@ function detectOwnTeam(matches) {
 }
 
 function DbuImportTab({ state, dispatch }) {
+  // "api" = officiel DBU API (anbefalet) · "link" = indsæt et DBU-link manuelt
+  const [method, setMethod] = useState("api");
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null); // { teamName, competition, matches, source }
@@ -1045,15 +1047,27 @@ function DbuImportTab({ state, dispatch }) {
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState(null);
 
-  const [apiSettingsOpen, setApiSettingsOpen] = useState(false);
   const [apiKey, setApiKey] = useState(state.dbuApiKey || "");
+  const hasApiSettings = !!(state.dbuApiKey && state.dbuPoolId && state.dbuTeamId);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [poolId, setPoolId] = useState(state.dbuPoolId || "");
   const [teamId, setTeamId] = useState(state.dbuTeamId || "");
-  const hasApiSettings = !!(state.dbuApiKey && state.dbuPoolId && state.dbuTeamId);
 
   const [teamList, setTeamList] = useState(null); // [{teamId, teamName, divisionName, poolId, poolName, rowName}]
   const [findingTeams, setFindingTeams] = useState(false);
   const [teamErr, setTeamErr] = useState("");
+
+  // Læser et fetch-svar sikkert som JSON. Hvis serveren fx svarer med en HTML-fejlside
+  // (typisk fordi en api-fil mangler eller ikke er lagt korrekt op), får brugeren en
+  // forståelig besked i stedet for en rå JavaScript-fejl.
+  async function safeReadJson(res) {
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error("Fik et uventet svar fra serveren. Tjek at alle api-filer er lagt korrekt op på GitHub, og prøv igen.");
+    }
+  }
 
   async function findMyTeams() {
     setTeamErr(""); setTeamList(null);
@@ -1061,7 +1075,7 @@ function DbuImportTab({ state, dispatch }) {
     setFindingTeams(true);
     try {
       const res = await fetch(`/api/dbu-teams?apiKey=${encodeURIComponent(apiKey.trim())}`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente holdliste.");
       setTeamList(data.teams);
     } catch (e) {
@@ -1071,23 +1085,12 @@ function DbuImportTab({ state, dispatch }) {
     }
   }
 
-  function pickTeam(t) {
-    setPoolId(String(t.poolId));
-    setTeamId(String(t.teamId));
-    setTeamList(null);
-  }
-
-  function saveApiSettings() {
-    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: apiKey.trim(), poolId: poolId.trim(), teamId: teamId.trim() });
-    setMsg({ type: "ok", text: "API-indstillinger gemt." });
-  }
-
   async function fetchFrom(fetchUrl) {
     setErr(""); setMsg(null); setPreview(null); setSelectedTeam("");
     setLoading(true);
     try {
       const res = await fetch(fetchUrl);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampprogrammet.");
       if (!data.matches || !data.matches.length) throw new Error("Fandt ingen kampe.");
       setPreview(data);
@@ -1099,14 +1102,35 @@ function DbuImportTab({ state, dispatch }) {
     }
   }
 
-  function handleFetch() {
-    if (!url.trim() || !/dbu\.dk/i.test(url)) { setErr("Indsæt et gyldigt DBU-link (skal indeholde dbu.dk)."); return; }
-    fetchFrom(`/api/kampprogram?url=${encodeURIComponent(url.trim())}`);
+  // Vælger et hold fra listen: gemmer indstillingerne OG henter kampprogrammet i ét trin.
+  function pickTeamAndFetch(t) {
+    const newPoolId = String(t.poolId);
+    const newTeamId = String(t.teamId);
+    setPoolId(newPoolId);
+    setTeamId(newTeamId);
+    setTeamList(null);
+    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: apiKey.trim(), poolId: newPoolId, teamId: newTeamId });
+    fetchFrom(`/api/kampprogram?apiKey=${encodeURIComponent(apiKey.trim())}&poolId=${encodeURIComponent(newPoolId)}&teamId=${encodeURIComponent(newTeamId)}`);
+  }
+
+  function saveAdvancedAndFetch() {
+    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: apiKey.trim(), poolId: poolId.trim(), teamId: teamId.trim() });
+    fetchFrom(`/api/kampprogram?apiKey=${encodeURIComponent(apiKey.trim())}&poolId=${encodeURIComponent(poolId.trim())}&teamId=${encodeURIComponent(teamId.trim())}`);
   }
 
   function handleFetchOfficial() {
     if (!hasApiSettings) return;
     fetchFrom(`/api/kampprogram?apiKey=${encodeURIComponent(state.dbuApiKey)}&poolId=${encodeURIComponent(state.dbuPoolId)}&teamId=${encodeURIComponent(state.dbuTeamId)}`);
+  }
+
+  function disconnectApi() {
+    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: "", poolId: "", teamId: "" });
+    setApiKey(""); setPoolId(""); setTeamId(""); setTeamList(null); setPreview(null);
+  }
+
+  function handleFetchLink() {
+    if (!url.trim() || !/dbu\.dk/i.test(url)) { setErr("Indsæt et gyldigt DBU-link (skal indeholde dbu.dk)."); return; }
+    fetchFrom(`/api/kampprogram?url=${encodeURIComponent(url.trim())}`);
   }
 
   // Alle holdnavne der optræder i kampene – bruges som valgmuligheder, hvis auto-genkendelsen skal rettes.
@@ -1147,66 +1171,96 @@ function DbuImportTab({ state, dispatch }) {
     return { added, removed, changed, overlap, looksLikeNewSeason };
   })() : null;
 
+  const methodBtn = (v, label) => ({
+    flex: 1, padding: "9px 10px", borderRadius: "8px", border: `1px solid ${method === v ? "rgba(34,197,94,0.4)" : C.border}`,
+    background: method === v ? "rgba(34,197,94,0.12)" : "transparent", color: method === v ? "#4ade80" : C.muted,
+    cursor: "pointer", fontFamily: F.body, fontSize: "12px", fontWeight: 700,
+  });
+
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
-        Indsæt linket til jeres holds kampprogram på DBU (fx <code style={{ color: C.blue }}>dbu.dk/resultater/hold/DIT-HOLD-ID/kampprogram</code>). Er det <strong style={{ color: C.text }}>samme sæson</strong> (fx en kamp der flytter tidspunkt), bevares al statistik. Er det en <strong style={{ color: C.text }}>helt ny sæson</strong>, kan du vælge at nulstille alt.
+        Er det <strong style={{ color: C.text }}>samme sæson</strong> (fx en kamp der flytter tidspunkt), bevares al statistik. Er det en <strong style={{ color: C.text }}>helt ny sæson</strong>, kan du vælge at nulstille alt bagefter.
       </div>
 
       {err && <div style={S.err}>{err}</div>}
       {msg && <div style={S.ok}>{msg.text}</div>}
 
-      <div style={{ border: `1px solid ${C.border}`, borderRadius: "9px", marginBottom: "16px", overflow: "hidden" }}>
-        <button
-          title="Indstil officiel DBU API-adgang – mere pålideligt end at hente fra et link"
-          onClick={() => setApiSettingsOpen(o => !o)}
-          style={{ width: "100%", textAlign: "left", background: C.bg, border: "none", cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", color: C.text, fontSize: "13px", fontWeight: 600 }}
-        >
-          <span>🔑 Officiel DBU API (valgfrit, mere pålideligt) {hasApiSettings && <span style={{ color: "#4ade80", fontSize: "11px", fontWeight: 700 }}>· Opsat</span>}</span>
-          <span style={{ color: C.muted, fontSize: "11px" }}>{apiSettingsOpen ? "▲" : "▼"}</span>
-        </button>
-        {apiSettingsOpen && (
-          <div style={{ padding: "14px", borderTop: `1px solid ${C.border}` }}>
-            <div style={{ fontSize: "11px", color: C.muted, marginBottom: "12px", lineHeight: 1.6 }}>
-              Find jeres API-nøgle i KlubOffice under <strong style={{ color: C.text }}>Klubben → "KlubOffice - Data"</strong>. Indsæt kun API-nøglen, og klik "Find mine hold" – så behøver I ikke selv lede efter Pulje-id/Hold-id.
-            </div>
-            <label style={S.label}>API-nøgle</label>
-            <input style={S.input} type="password" placeholder="Klubbens API-nøgle" value={apiKey} onChange={e => setApiKey(e.target.value)} />
-
-            {teamErr && <div style={S.err}>{teamErr}</div>}
-            <button style={{ ...S.btn(findingTeams ? "secondary" : "primary"), marginBottom: "12px" }} onClick={findMyTeams} disabled={findingTeams || !apiKey.trim()}>{findingTeams ? "Søger…" : "🔍 Find mine hold"}</button>
-
-            {teamList && (
-              <div style={{ marginBottom: "12px" }}>
-                {teamList.map(t => (
-                  <button
-                    key={t.teamId}
-                    onClick={() => pickTeam(t)}
-                    style={{ display: "block", width: "100%", textAlign: "left", background: C.surfaceRaised, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "10px 12px", marginBottom: "6px", cursor: "pointer", color: C.text }}
-                  >
-                    <div style={{ fontSize: "13px", fontWeight: 700 }}>{t.teamName} <span style={{ color: C.muted, fontWeight: 400 }}>· {t.divisionName}</span></div>
-                    <div style={{ fontSize: "11px", color: C.muted }}>{t.rowName || t.poolName}</div>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <label style={S.label}>Pulje-id</label>
-            <input style={S.input} placeholder="Fx 135" value={poolId} onChange={e => setPoolId(e.target.value)} />
-            <label style={S.label}>Hold-id</label>
-            <input style={S.input} placeholder="Fx 502134" value={teamId} onChange={e => setTeamId(e.target.value)} />
-            <button style={S.btn("secondary", false)} onClick={saveApiSettings}>Gem indstillinger</button>
-          </div>
-        )}
+      {/* ---- Vælg metode ---- */}
+      <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+        <button style={methodBtn("api")} onClick={() => setMethod("api")}>🔑 Officiel API</button>
+        <button style={methodBtn("link")} onClick={() => setMethod("link")}>🔗 Link</button>
       </div>
 
-      {hasApiSettings && (
-        <button style={{ ...S.btn(loading ? "secondary" : "primary"), marginBottom: "16px" }} onClick={handleFetchOfficial} disabled={loading}>{loading ? "Henter…" : "🔑 Hent via officielt API"}</button>
+      {/* ---- Metode: Officiel API ---- */}
+      {method === "api" && (
+        <div style={S.card}>
+          {hasApiSettings ? (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+                <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 6px rgba(74,222,128,0.8)" }} />
+                <span style={{ fontSize: "13px", fontWeight: 700 }}>Forbundet via officielt API</span>
+              </div>
+              <button style={{ ...S.btn(loading ? "secondary" : "primary"), marginBottom: "10px" }} onClick={handleFetchOfficial} disabled={loading}>{loading ? "Henter…" : "Hent kampprogram"}</button>
+              <div style={{ display: "flex", gap: "14px" }}>
+                <button onClick={() => { setTeamList(null); dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: state.dbuApiKey, poolId: "", teamId: "" }); }} style={{ background: "transparent", border: "none", color: C.blue, fontSize: "12px", cursor: "pointer", padding: 0 }}>Skift hold</button>
+                <button onClick={disconnectApi} style={{ background: "transparent", border: "none", color: C.muted, fontSize: "12px", cursor: "pointer", padding: 0 }}>Fjern forbindelse</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.6 }}>
+                Find jeres API-nøgle i KlubOffice under <strong style={{ color: C.text }}>Klubben → "KlubOffice - Data"</strong>. Indsæt kun nøglen – I skal ikke selv lede efter noget hold-id.
+              </div>
+              <label style={S.label}>API-nøgle</label>
+              <input style={S.input} type="password" placeholder="Klubbens API-nøgle" value={apiKey} onChange={e => setApiKey(e.target.value)} onKeyDown={e => e.key === "Enter" && findMyTeams()} />
+              {teamErr && <div style={S.err}>{teamErr}</div>}
+
+              {!teamList && (
+                <button style={{ ...S.btn(findingTeams ? "secondary" : "primary") }} onClick={findMyTeams} disabled={findingTeams || !apiKey.trim()}>{findingTeams ? "Søger…" : "Find mine hold"}</button>
+              )}
+
+              {teamList && (
+                <div style={{ marginTop: "4px" }}>
+                  <div style={S.label}>Vælg jeres hold</div>
+                  {teamList.map(t => (
+                    <button
+                      key={t.teamId}
+                      onClick={() => pickTeamAndFetch(t)}
+                      disabled={loading}
+                      style={{ display: "block", width: "100%", textAlign: "left", background: C.surfaceRaised, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "11px 12px", marginBottom: "6px", cursor: "pointer", color: C.text }}
+                    >
+                      <div style={{ fontSize: "13px", fontWeight: 700 }}>{t.teamName} <span style={{ color: C.muted, fontWeight: 400 }}>· {t.divisionName}</span></div>
+                      <div style={{ fontSize: "11px", color: C.muted }}>{t.rowName || t.poolName}</div>
+                    </button>
+                  ))}
+                  {loading && <div style={{ fontSize: "12px", color: C.muted }}>Henter kampprogram…</div>}
+                </div>
+              )}
+
+              <button onClick={() => setAdvancedOpen(o => !o)} style={{ background: "transparent", border: "none", color: C.muted, fontSize: "11px", cursor: "pointer", padding: 0, marginTop: "12px" }}>{advancedOpen ? "▲ Skjul avanceret" : "▼ Indtast Pulje-id/Hold-id manuelt i stedet"}</button>
+              {advancedOpen && (
+                <div style={{ marginTop: "10px" }}>
+                  <label style={S.label}>Pulje-id</label>
+                  <input style={S.input} placeholder="Fx 135" value={poolId} onChange={e => setPoolId(e.target.value)} />
+                  <label style={S.label}>Hold-id</label>
+                  <input style={S.input} placeholder="Fx 502134" value={teamId} onChange={e => setTeamId(e.target.value)} />
+                  <button style={S.btn("secondary", false)} onClick={saveAdvancedAndFetch} disabled={!apiKey.trim() || !poolId.trim() || !teamId.trim()}>Gem og hent</button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       )}
 
-      <label style={S.label}>Eller indsæt DBU kampprogram-link</label>
-      <input style={S.input} placeholder="https://dbu.dk/resultater/hold/.../kampprogram" value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handleFetch()} />
-      <button style={S.btn(loading ? "secondary" : "primary")} onClick={handleFetch} disabled={loading}>{loading ? "Henter…" : "Hent kampprogram"}</button>
+      {/* ---- Metode: Link ---- */}
+      {method === "link" && (
+        <div style={S.card}>
+          <label style={S.label}>DBU kampprogram-link</label>
+          <input style={S.input} placeholder="https://dbu.dk/resultater/hold/.../kampprogram" value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handleFetchLink()} />
+          <button style={S.btn(loading ? "secondary" : "primary")} onClick={handleFetchLink} disabled={loading}>{loading ? "Henter…" : "Hent kampprogram"}</button>
+        </div>
+      )}
 
       {preview && (
         <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginTop: "16px" }}>
