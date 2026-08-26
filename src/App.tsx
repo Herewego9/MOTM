@@ -1077,7 +1077,12 @@ function DbuImportTab({ state, dispatch }) {
       const res = await fetch(`/api/dbu-teams?apiKey=${encodeURIComponent(apiKey.trim())}`);
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente holdliste.");
-      setTeamList(data.teams);
+      if (data.teams.length === 1) {
+        // Kun ét hold på nøglen – ingen grund til at bede brugeren vælge noget.
+        pickTeamAndFetch(data.teams[0]);
+      } else {
+        setTeamList(data.teams);
+      }
     } catch (e) {
       setTeamErr(e.message || "Noget gik galt.");
     } finally {
