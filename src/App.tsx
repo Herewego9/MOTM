@@ -88,6 +88,8 @@ function deriveSeasonStats(matchStats) {
     (players || []).forEach(p => {
       const k = p.name.toLowerCase();
       if (!out[k]) out[k] = { name: p.name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
+      // "Kampe" / matchesPlayed = kampe med registreret statistik-række (mål/assist/kort),
+      // IKKE nødvendigvis alle kampe spilleren har været på banen i.
       out[k].matchesPlayed += 1;
       out[k].goals       += p.goals || 0;
       out[k].assists     += p.assists || 0;
@@ -583,12 +585,12 @@ function StatsView({ state }) {
   // Samme rækkefølge som Ranglisten: point først, derefter MOTM/mål/assist.
   const players = Object.values(seasonStats).sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
   const cols = [
-    { label: "Kampe", key: "matchesPlayed", emoji: "⚽" },
-    { label: "Mål", key: "goals", emoji: "🥅" },
-    { label: "Assist", key: "assists", emoji: "🎯" },
-    { label: "Gult", key: "yellowCards", emoji: "🟨" },
-    { label: "Rødt", key: "redCards", emoji: "🟥" },
-    { label: "MOTM", key: "motmWins", emoji: "⭐" },
+    { label: "Med stats", key: "matchesPlayed", emoji: "⚽", title: "Kampe med registreret statistik (mål, assist eller kort) – ikke nødvendigvis kampe spillet" },
+    { label: "Mål", key: "goals", emoji: "🥅", title: "Mål" },
+    { label: "Assist", key: "assists", emoji: "🎯", title: "Assist" },
+    { label: "Gult", key: "yellowCards", emoji: "🟨", title: "Gule kort" },
+    { label: "Rødt", key: "redCards", emoji: "🟥", title: "Røde kort" },
+    { label: "MOTM", key: "motmWins", emoji: "⭐", title: "Kampens spiller (MOTM)" },
   ];
 
   return (
@@ -598,14 +600,17 @@ function StatsView({ state }) {
         <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen statistik {archived ? "for denne sæson" : "endnu"}.</div></div>
       ) : (
         <div style={S.card}>
-          <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "14px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
+          <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
+          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.55 }}>
+            ⚽ <strong style={{ color: C.text, fontWeight: 600 }}>Med stats</strong> = kampe, hvor spilleren har fået registreret mål, assist eller kort — ikke hvor mange kampe de har spillet.
+          </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: "left", padding: "7px 8px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }}>Spiller</th>
                   {cols.map(c => (
-                    <th key={c.key} style={{ textAlign: "center", padding: "7px 4px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}`, verticalAlign: "bottom" }} title={c.label}>
+                    <th key={c.key} style={{ textAlign: "center", padding: "7px 4px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}`, verticalAlign: "bottom" }} title={c.title}>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", lineHeight: 1.15 }}>
                         <span style={{ fontSize: "15px" }} aria-hidden="true">{c.emoji}</span>
                         <span style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.2px", whiteSpace: "nowrap" }}>{c.label}</span>
@@ -1707,7 +1712,7 @@ function BackupTab({ state, dispatch }) {
   function exportSeasonCsv() {
     const seasonStats = deriveSeasonStats(state.matchStats);
     const rows = Object.values(seasonStats)
-      .map(p => ({ Spiller: p.name, Kampe: p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Point: scorePlayer(p) }))
+      .map(p => ({ Spiller: p.name, "Kampe med statistik": p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Point: scorePlayer(p) }))
       .sort((a, b) => b.Point - a.Point);
     if (!rows.length) { setMsg({ type: "err", text: "Ingen statistik at eksportere endnu." }); return; }
     downloadBlob(toCsv(rows), `${slugify(state.teamName)}-saesonstatistik.csv`, "text/csv;charset=utf-8;");
