@@ -1,0 +1,10 @@
+{
+  "name": "MOTM – Man of the Match",
+  "install": "npm install",
+  "terminals": [
+    {
+      "name": "vite-dev",
+      "command": "npm run dev -- --host"
+    }
+  ]
+}
