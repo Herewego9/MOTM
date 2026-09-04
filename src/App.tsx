@@ -514,7 +514,14 @@ function StatsView({ state }) {
               <thead>
                 <tr>
                   <th style={{ textAlign: "left", padding: "7px 8px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }}>Spiller</th>
-                  {cols.map(c => <th key={c.key} style={{ textAlign: "center", padding: "7px 5px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }} title={c.label}>{c.emoji}</th>)}
+                  {cols.map(c => (
+                    <th key={c.key} style={{ textAlign: "center", padding: "7px 4px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}`, verticalAlign: "bottom" }} title={c.label}>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", lineHeight: 1.15 }}>
+                        <span style={{ fontSize: "15px" }} aria-hidden="true">{c.emoji}</span>
+                        <span style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.2px", whiteSpace: "nowrap" }}>{c.label}</span>
+                      </div>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
