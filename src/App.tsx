@@ -88,6 +88,8 @@ function deriveSeasonStats(matchStats) {
     (players || []).forEach(p => {
       const k = p.name.toLowerCase();
       if (!out[k]) out[k] = { name: p.name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
+      // "Kampe" / matchesPlayed = kampe med registreret statistik-række (mål/assist/kort),
+      // IKKE nødvendigvis alle kampe spilleren har været på banen i.
       out[k].matchesPlayed += 1;
       out[k].goals       += p.goals || 0;
       out[k].assists     += p.assists || 0;
@@ -319,6 +321,8 @@ function reducer(state, action) {
       return { ...state, votes: { ...state.votes, [matchId]: next }, matchStats };
     }
     case "OPEN_MATCH":
+      // Kun én afstemning ad gangen – blokér åbning af ny kamp, mens en anden er åben.
+      if (state.openMatchId && state.openMatchId !== action.matchId) return state;
       return { ...state, openMatchId: action.matchId };
     case "CLOSE_MATCH": {
       const matchVotes = state.votes[action.matchId] || {};
@@ -334,7 +338,7 @@ function reducer(state, action) {
       const newVoted = { ...state.votedMatches };
       delete newVoted[action.matchId]; // denne enhed må gerne stemme igen
       const prevMatchData = state.matchStats[action.matchId] || { players: [] };
-      return { ...state, openMatchId: state.openMatchId === action.matchId ? null : state.openMatchId, revealed: { ...state.revealed, [action.matchId]: false }, votes: newVotes, votedMatches: newVoted, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey: null } } };
+      return { ...state, openMatchId: state.openMatchId === action.matchId ? null : state.openMatchId, revealed: { ...state.revealed, [action.matchId]: false }, votes: newVotes, votedMatches: newVoted, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey: null, motmName: null } } };
     }
     case "RESET_MATCH": {
       const newVotes = { ...state.votes }; delete newVotes[action.matchId];
@@ -436,7 +440,7 @@ function reducer(state, action) {
 // VOTE VIEW
 // ============================================================
 function VoteView({ state, dispatch, voteError }) {
-  const { openMatchId, revealed, votedMatches } = state;
+  const { openMatchId, revealed, votedMatches, matchStats } = state;
   const match = state.matches.find(m => m.id === openMatchId);
   const [playerName, setPlayerName] = useState("");
   const [err, setErr] = useState("");
@@ -445,6 +449,14 @@ function VoteView({ state, dispatch, voteError }) {
 
   // Persisteret status – overlever faneskift og genindlæsning af siden.
   const alreadyVotedFor = openMatchId ? votedMatches[openMatchId] : null;
+  const openIsRevealed = openMatchId ? !!revealed[openMatchId] : false;
+  const openMotmName = openMatchId ? matchStats[openMatchId]?.motmName : null;
+
+  // Seneste afslørede kamp (til fejring når der ikke er en åben afstemning).
+  const latestRevealed = [...(state.matches || [])]
+    .filter(m => revealed[m.id] && matchStats[m.id]?.motmName)
+    .sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))[0];
+  const latestMotm = latestRevealed ? matchStats[latestRevealed.id]?.motmName : null;
 
   function handleVote() {
     if (!playerName.trim()) { setErr("Skriv navnet på kampens MVP."); return; }
@@ -465,10 +477,30 @@ function VoteView({ state, dispatch, voteError }) {
 
       {!openMatchId ? (
         <div style={S.card}>
-          <div style={{ textAlign: "center", padding: "24px 0" }}>
-            <div style={{ fontSize: "34px", marginBottom: "10px" }}>🔒</div>
-            <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "5px" }}>Ingen aktiv afstemning</div>
-            <div style={{ color: C.muted, fontSize: "13px" }}>Admin åbner afstemningen efter kampen.</div>
+          {latestMotm ? (
+            <div style={{ textAlign: "center", padding: "20px 0" }}>
+              <div style={{ fontSize: "42px", marginBottom: "10px" }}>⭐</div>
+              <div style={{ fontSize: "14px", color: C.muted, marginBottom: "4px" }}>Seneste kampens spiller</div>
+              <div style={{ fontFamily: F.display, fontSize: "28px", fontWeight: 800, color: C.gold, letterSpacing: "0.3px", marginBottom: "6px" }}>{latestMotm}</div>
+              <div style={{ color: C.muted, fontSize: "12px" }}>{fmtDate(latestRevealed.date)} · {opponent(latestRevealed, state.teamName)}</div>
+              <div style={{ color: C.muted, fontSize: "12px", marginTop: "14px" }}>Admin åbner den næste afstemning efter kampen.</div>
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "24px 0" }}>
+              <div style={{ fontSize: "34px", marginBottom: "10px" }}>🔒</div>
+              <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "5px" }}>Ingen aktiv afstemning</div>
+              <div style={{ color: C.muted, fontSize: "13px" }}>Admin åbner afstemningen efter kampen.</div>
+            </div>
+          )}
+        </div>
+      ) : alreadyVotedFor && openIsRevealed && openMotmName ? (
+        <div style={{ ...S.card, textAlign: "center" }}>
+          <div style={{ fontSize: "42px", marginBottom: "10px" }}>⭐</div>
+          <div style={{ fontSize: "14px", color: C.muted, marginBottom: "4px" }}>Kampens spiller er</div>
+          <div style={{ fontFamily: F.display, fontSize: "28px", fontWeight: 800, color: C.gold, letterSpacing: "0.3px", marginBottom: "8px" }}>{openMotmName}</div>
+          <div style={{ color: C.muted, fontSize: "13px" }}>
+            Du stemte på <strong style={{ color: C.text, textTransform: "capitalize" }}>{alreadyVotedFor}</strong>
+            {alreadyVotedFor.toLowerCase() === openMotmName.toLowerCase() ? " – godt tip!" : "."}
           </div>
         </div>
       ) : alreadyVotedFor ? (
@@ -476,7 +508,7 @@ function VoteView({ state, dispatch, voteError }) {
           <div style={{ fontSize: "42px", marginBottom: "10px" }}>✅</div>
           <div style={{ fontSize: "18px", fontWeight: 700, marginBottom: "5px" }}>Du har allerede stemt</div>
           <div style={{ color: C.muted, fontSize: "13px" }}>
-            Du stemte på <strong style={{ color: C.text, textTransform: "capitalize" }}>{alreadyVotedFor}</strong> til denne kamp. Man kan kun stemme én gang.
+            Du stemte på <strong style={{ color: C.text, textTransform: "capitalize" }}>{alreadyVotedFor}</strong>. Resultatet afsløres, når admin lukker afstemningen.
           </div>
         </div>
       ) : (
@@ -489,7 +521,7 @@ function VoteView({ state, dispatch, voteError }) {
             <div style={S.badge(true)}><span style={S.dot(true)} /> Åben</div>
           </div>
           {err && <div style={S.err}>{err}</div>}
-          <label style={{ ...S.label, fontSize: "16px" }}>Hvem er kampens MVP ⭐?</label>
+          <label style={{ ...S.label, fontSize: "16px" }}>Hvem er kampens spiller ⭐?</label>
           {squad.length > 0 ? (
             <select style={S.input} value={playerName} onChange={e => { setPlayerName(e.target.value); setErr(""); }}>
               <option value="">— Vælg spiller —</option>
@@ -509,11 +541,14 @@ function VoteView({ state, dispatch, voteError }) {
         ) : state.matches.map(m => {
           const isActive = m.id === openMatchId;
           const done = revealed[m.id];
+          const motm = matchStats[m.id]?.motmName;
           return (
             <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 11px", borderRadius: "7px", marginBottom: "5px", background: isActive ? "rgba(34,197,94,0.08)" : "transparent", border: isActive ? "1px solid rgba(74,222,128,0.25)" : `1px solid ${C.border}` }}>
               <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
               <div style={{ flex: 1, fontSize: "13px", fontWeight: 500 }}>{isHome(m, state.teamName) ? "🏠 " : "✈️ "}{opponent(m, state.teamName)}</div>
-              <div style={{ fontSize: "11px", color: done ? "#4ade80" : isActive ? "#4ade80" : C.muted, fontWeight: isActive ? 700 : 400 }}>{done ? "✓" : isActive ? "● Åben" : m.time}</div>
+              <div style={{ fontSize: "11px", color: done ? C.gold : isActive ? "#4ade80" : C.muted, fontWeight: isActive || done ? 700 : 400, textAlign: "right", maxWidth: "120px" }}>
+                {done ? (motm ? `⭐ ${motm}` : "✓") : isActive ? "● Åben" : m.time}
+              </div>
             </div>
           );
         })}
@@ -547,14 +582,15 @@ function StatsView({ state }) {
   const matchStatsSource = archived ? archived.matchStats : state.matchStats;
 
   const seasonStats = deriveSeasonStats(matchStatsSource);
-  const players = Object.values(seasonStats).sort((a, b) => b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
+  // Samme rækkefølge som Ranglisten: point først, derefter MOTM/mål/assist.
+  const players = Object.values(seasonStats).sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
   const cols = [
-    { label: "Kampe", key: "matchesPlayed", emoji: "⚽" },
-    { label: "Mål", key: "goals", emoji: "🥅" },
-    { label: "Assist", key: "assists", emoji: "🎯" },
-    { label: "Gult", key: "yellowCards", emoji: "🟨" },
-    { label: "Rødt", key: "redCards", emoji: "🟥" },
-    { label: "MOTM", key: "motmWins", emoji: "⭐" },
+    { label: "Med stats", key: "matchesPlayed", emoji: "⚽", title: "Kampe med registreret statistik (mål, assist eller kort) – ikke nødvendigvis kampe spillet" },
+    { label: "Mål", key: "goals", emoji: "🥅", title: "Mål" },
+    { label: "Assist", key: "assists", emoji: "🎯", title: "Assist" },
+    { label: "Gult", key: "yellowCards", emoji: "🟨", title: "Gule kort" },
+    { label: "Rødt", key: "redCards", emoji: "🟥", title: "Røde kort" },
+    { label: "MOTM", key: "motmWins", emoji: "⭐", title: "Kampens spiller (MOTM)" },
   ];
 
   return (
@@ -564,14 +600,17 @@ function StatsView({ state }) {
         <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen statistik {archived ? "for denne sæson" : "endnu"}.</div></div>
       ) : (
         <div style={S.card}>
-          <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "14px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
+          <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
+          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.55 }}>
+            ⚽ <strong style={{ color: C.text, fontWeight: 600 }}>Med stats</strong> = kampe, hvor spilleren har fået registreret mål, assist eller kort — ikke hvor mange kampe de har spillet.
+          </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: "left", padding: "7px 8px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }}>Spiller</th>
                   {cols.map(c => (
-                    <th key={c.key} style={{ textAlign: "center", padding: "7px 4px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}`, verticalAlign: "bottom" }} title={c.label}>
+                    <th key={c.key} style={{ textAlign: "center", padding: "7px 4px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}`, verticalAlign: "bottom" }} title={c.title}>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", lineHeight: 1.15 }}>
                         <span style={{ fontSize: "15px" }} aria-hidden="true">{c.emoji}</span>
                         <span style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.2px", whiteSpace: "nowrap" }}>{c.label}</span>
@@ -812,9 +851,20 @@ function MatchesTab({ state, dispatch }) {
                 <div style={{ color: C.muted, fontSize: "11px", marginTop: "2px" }}>{fmtDate(m.date)} · {m.time} · {totalVotes} stemme{totalVotes !== 1 ? "r" : ""}{hasStats ? " · stat ✓" : ""}</div>
               </div>
               <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
-                {!isOpen && !isRevealed && <button title="Åbn afstemning for denne kamp – spillerne kan nu stemme" style={S.btn("primary", false)} onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}>Åbn</button>}
+                {!isOpen && !isRevealed && (
+                  <button
+                    title={state.openMatchId ? "Luk den åbne afstemning først" : "Åbn afstemning for denne kamp – spillerne kan nu stemme"}
+                    style={{ ...S.btn("primary", false), opacity: state.openMatchId ? 0.45 : 1, cursor: state.openMatchId ? "not-allowed" : "pointer" }}
+                    disabled={!!state.openMatchId}
+                    onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}
+                  >Åbn</button>
+                )}
                 {isOpen && <button title="Lukker afstemningen og afslører kampens MVP" style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
-                {isRevealed && <span style={{ fontSize: "11px", color: "#4ade80" }}>✓ Afsluttet</span>}
+                {isRevealed && (
+                  <span style={{ fontSize: "11px", color: "#4ade80" }}>
+                    ✓ Afsluttet{state.matchStats[m.id]?.motmName ? ` · ⭐ ${state.matchStats[m.id].motmName}` : ""}
+                  </span>
+                )}
                 {totalVotes > 0 && (
                   <button title="Vis/skjul stemmefordelingen for denne kamp" onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
                 )}
@@ -1514,10 +1564,11 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   const [candidate, setCandidate] = useState(null);
   const [msg, setMsg] = useState(null);
   const matchesSorted = [...(state.matches || [])].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-  const activeMatchId = matchId || matchesSorted[0]?.id || "";
+  // null = auto (første kamp), "" = eksplicit "ingen bestemt kamp"
+  const activeMatchId = matchId === null ? (matchesSorted[0]?.id || "") : matchId;
 
   const squad = collectKnownPlayers(state);
-  const matchMotmName = state.matchStats[activeMatchId]?.motmName || null;
+  const matchMotmName = activeMatchId ? (state.matchStats[activeMatchId]?.motmName || null) : null;
   const pool = computeLaundryPool(squad, state.laundryHistory, matchMotmName);
   const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -1661,7 +1712,7 @@ function BackupTab({ state, dispatch }) {
   function exportSeasonCsv() {
     const seasonStats = deriveSeasonStats(state.matchStats);
     const rows = Object.values(seasonStats)
-      .map(p => ({ Spiller: p.name, Kampe: p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Point: scorePlayer(p) }))
+      .map(p => ({ Spiller: p.name, "Kampe med statistik": p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Point: scorePlayer(p) }))
       .sort((a, b) => b.Point - a.Point);
     if (!rows.length) { setMsg({ type: "err", text: "Ingen statistik at eksportere endnu." }); return; }
     downloadBlob(toCsv(rows), `${slugify(state.teamName)}-saesonstatistik.csv`, "text/csv;charset=utf-8;");
@@ -1779,7 +1830,7 @@ export default function App() {
   const [voteError, setVoteError] = useState("");
   // Holdes her (ikke inde i StatsTab/LaundryTab), så det IKKE nulstilles ved faneskift.
   const [statsMatchId, setStatsMatchId] = useState(null);
-  const [laundryMatchId, setLaundryMatchId] = useState("");
+  const [laundryMatchId, setLaundryMatchId] = useState(null); // null = auto første kamp; "" = ingen bestemt kamp
 
   // Hent delt data ved opstart + lyt til ændringer fra andre enheder (live).
   useEffect(() => {
