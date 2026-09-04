@@ -1,11 +1,21 @@
 // Vercel serverless-funktion: /api/dbu-teams
-// Henter en liste af ALLE klubbens hold via DBU's officielle API – kun ud fra en API-nøgle.
-// Så behøver man ikke selv lede efter Pulje-id/Hold-id manuelt i KlubOffice.
-// Kald: /api/dbu-teams?apiKey=...
+// Henter klubbens hold via DBU's officielle API.
+// Kræver admin-session. API-nøgle sendes i POST-body (aldrig i query-string).
+// Kald: POST /api/dbu-teams  { "apiKey": "..." }
+
+import { requireAdmin, sendUnauthorized } from "./_lib/auth.js";
 
 export default async function handler(req, res) {
-  const { apiKey } = req.query;
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Brug POST med API-nøgle i body." });
+  }
+  if (!requireAdmin(req)) return sendUnauthorized(res);
 
+  if (req.query?.apiKey) {
+    return res.status(400).json({ error: "Send API-nøgle via POST-body, ikke i URL'en." });
+  }
+
+  const apiKey = req.body?.apiKey;
   if (!apiKey || typeof apiKey !== "string") {
     return res.status(400).json({ error: "Angiv klubbens API-nøgle." });
   }

@@ -1,19 +1,17 @@
 // Vercel serverless-funktion: /api/kampinfo
 // Henter og aflæser en DBU "kampinfo"-side (holdopstillinger + målscorere/assists).
-// Kald: /api/kampinfo?url=https://dbu.dk/resultater/kamp/XXXXXX_XXXXXX/kampinfo
-//
-// Parsing-strategi (valideret mod et rigtigt eksempel, 12-04-2026 ST70 4-3 Christiansbjerg):
-// Siden lister begivenheder som en flad rækkefølge af "'<minuttal>" efterfulgt af enten
-// et målikon og 1-2 spillernavne, i skiftende rækkefølge (ikon-før-navne ELLER
-// navne-før-ikon, alt efter hvilket hold der har scoret – hjemmehold har ikonet FØR
-// navnene, udehold har det EFTER). Det første navn i gruppen er altid målscoreren,
-// det andet (hvis det findes) er assist-spilleren. Vi tæller alle "'<tal>"-grupper med
-// et målikon som ét mål, uanset rækkefølgen.
+// Kræver admin-session (Bearer-token). Accepterer GET ?url=... eller POST { url }.
 
 import * as cheerio from "cheerio";
+import { requireAdmin, sendUnauthorized } from "./_lib/auth.js";
 
 export default async function handler(req, res) {
-  const { url } = req.query;
+  if (req.method !== "GET" && req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+  if (!requireAdmin(req)) return sendUnauthorized(res);
+
+  const url = req.method === "POST" ? req.body?.url : req.query?.url;
 
   if (!url || typeof url !== "string" || !/dbu\.dk\/.*kampinfo/i.test(url)) {
     return res.status(400).json({ error: "Angiv et gyldigt DBU kampinfo-link (skal indeholde dbu.dk og 'kampinfo')." });
@@ -27,13 +25,11 @@ export default async function handler(req, res) {
     const html = await pageRes.text();
     const $ = cheerio.load(html);
 
-    // ---- Holdnavne, fx "ST 70 - Christiansbjerg IF (2)" ----
     const titleText = $("h1").first().text().trim() || $("title").first().text().trim();
     const parts = titleText.split(" - ").map(s => s.trim()).filter(Boolean);
     const homeTeam = parts[0] || null;
     const awayTeam = parts[1] || null;
 
-    // ---- Holdopstillinger (springer "Officials"-tabeller over – de er ikke spillere) ----
     const squads = {};
     $("table").each((_, table) => {
       const headerText = $(table).find("th").first().text().trim();
@@ -46,7 +42,6 @@ export default async function handler(req, res) {
       if (names.length) squads[headerText] = names;
     });
 
-    // ---- Flad token-liste af hele siden, i den rækkefølge indholdet reelt står i HTML'en ----
     const tokens = [];
     function walk(el) {
       $(el).contents().each((_, node) => {
@@ -65,7 +60,6 @@ export default async function handler(req, res) {
     }
     walk("body");
 
-    // ---- Grupér tokens efter minut-markør (fx "'84") ----
     const events = [];
     let current = null;
     tokens.forEach(tok => {
@@ -78,11 +72,10 @@ export default async function handler(req, res) {
     });
     if (current) events.push(current);
 
-    // ---- Udtræk mål: kun grupper der indeholder et målikon ----
     const goals = [];
     events.forEach(ev => {
       const iconIndex = ev.items.findIndex(i => i.type === "goal_icon");
-      if (iconIndex === -1) return; // ikke en målhændelse (fx "Kamp start", "1. halvleg slut")
+      if (iconIndex === -1) return;
       const names = ev.items.filter(i => i.type === "text").map(i => i.value);
       const scorer = names[0] || null;
       const assist = names[1] || null;
@@ -95,8 +88,6 @@ export default async function handler(req, res) {
     });
     goals.sort((a, b) => parseInt(a.minute, 10) - parseInt(b.minute, 10));
 
-    // OBS: Vi fejler bevidst IKKE, bare fordi der ingen mål er (0-0-kamp, eller mål/assist
-    // endnu ikke registreret af DBU). Truppen (holdopstillingerne) skal stadig kunne hentes.
     if (!Object.keys(squads).length && !goals.length) {
       return res.status(422).json({ error: "Fandt hverken holdopstilling eller mål på siden. Kampen er måske ikke afviklet endnu." });
     }

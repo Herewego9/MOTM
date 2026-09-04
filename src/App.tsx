@@ -1,17 +1,15 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// ==== UDFYLD DISSE TO MED DINE EGNE SUPABASE-VÆRDIER (Settings > API) ====
-// ==== Supabase-nøgler og admin-kode læses fra miljøvariabler, IKKE fra selve koden ====
-// Sæt disse i Vercel: Settings → Environment Variables (og lokalt i en .env-fil, som
-// aldrig committes til GitHub). Se instruktioner i chatten for hvordan.
+// ==== Offentlige klient-nøgler (kun læsning efter RLS) ====
+// Admin-adgangskode og service-role ligger KUN på serveren (ADMIN_PASSWORD,
+// SUPABASE_SERVICE_ROLE_KEY) – aldrig som VITE_*-variabler.
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // ==========================================================================
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
 // Kampdata (stemmer, statistik, m.m.) er DELT mellem alle der bruger appen – ligger i Supabase.
 // "Har jeg stemt"-status er PERSONLIG for denne enhed – ligger i localStorage.
 // Bemærk: disse er kun INTERNE opbevaringsnøgler i jeres egen Supabase-database –
@@ -20,6 +18,43 @@ const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
 // gemte data (den ville lede efter en ny, tom nøgle i stedet for jeres rigtige data).
 const SHARED_KEY = "st70-shared";
 const PERSONAL_KEY = "st70-voted-by-me";
+const ADMIN_TOKEN_KEY = "motm-admin-token";
+const DBU_API_KEY_STORAGE = "motm-dbu-api-key";
+
+function getAdminToken() {
+  try { return sessionStorage.getItem(ADMIN_TOKEN_KEY) || ""; }
+  catch { return ""; }
+}
+function setAdminToken(token) {
+  try {
+    if (token) sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch { /* private mode */ }
+}
+function getDbuApiKey() {
+  try { return sessionStorage.getItem(DBU_API_KEY_STORAGE) || ""; }
+  catch { return ""; }
+}
+function setDbuApiKeyLocal(key) {
+  try {
+    if (key) sessionStorage.setItem(DBU_API_KEY_STORAGE, key);
+    else sessionStorage.removeItem(DBU_API_KEY_STORAGE);
+  } catch { /* private mode */ }
+}
+function adminHeaders(extra = {}) {
+  const token = getAdminToken();
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+/** Fjerner hemmeligheder fra delt state (må aldrig synces/gemmes). */
+function stripSecrets(shared) {
+  if (!shared || typeof shared !== "object") return shared;
+  const { dbuApiKey: _dbuApiKey, votedMatches: _votedMatches, ...rest } = shared;
+  return rest;
+}
 
 const INIT_SHARED = {
   openMatchId: null,
@@ -32,7 +67,8 @@ const INIT_SHARED = {
   laundryHistory: [], // Hvem har haft spilletøjet med hjem til vask, og hvornår
   teamName: null, // Sættes automatisk ud fra DBU-kampprogrammet – ingen hardkodede holdnavne
   competition: null, // Række/turnering, sættes automatisk fra DBU
-  dbuApiKey: "", dbuPoolId: "", dbuTeamId: "", // Valgfri officiel DBU API-adgang (mere pålideligt end skrabning)
+  // DBU API-nøgle gemmes IKKE her (kun pool/team-id). Nøglen ligger i sessionStorage på admin-enheden.
+  dbuPoolId: "", dbuTeamId: "",
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -115,22 +151,39 @@ function fmtDate(iso) { return new Date(iso).toLocaleDateString("da-DK", { weekd
 function isHome(m, teamName) { return !!teamName && m.home === teamName; }
 function opponent(m, teamName) { return isHome(m, teamName) ? m.away : m.home; }
 
-// ---- Storage: delt data i Supabase, personlig data i localStorage ----
+// ---- Storage: læs via anon (RLS), skriv via server-API (service role) ----
 async function loadSharedFromSupabase() {
   try {
     const { data, error } = await supabase.from("kv_store").select("value, updated_at").eq("key", SHARED_KEY).maybeSingle();
     if (error) throw error;
-    if (data && data.value) return { ...INIT_SHARED, ...data.value, _lastUpdated: data.updated_at || null };
+    if (data && data.value) return { ...INIT_SHARED, ...stripSecrets(data.value), _lastUpdated: data.updated_at || null };
   } catch (e) { console.error("Kunne ikke hente delt data:", e); }
   return { ...INIT_SHARED };
 }
-async function saveSharedToSupabase(shared) {
-  const nowIso = new Date().toISOString();
-  try {
-    const { error } = await supabase.from("kv_store").upsert({ key: SHARED_KEY, value: shared, updated_at: nowIso });
-    if (error) throw error;
-  } catch (e) { console.error("Kunne ikke gemme delt data:", e); }
-  return nowIso;
+async function saveSharedViaApi(shared) {
+  const token = getAdminToken();
+  if (!token) throw new Error("Admin-session mangler. Log ind igen.");
+  const res = await fetch("/api/shared-save", {
+    method: "POST",
+    headers: adminHeaders(),
+    body: JSON.stringify({ shared: stripSecrets(shared) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401) setAdminToken("");
+    throw new Error(data.error || "Kunne ikke gemme data.");
+  }
+  return data.updated_at || new Date().toISOString();
+}
+async function submitVoteViaApi(matchId, player) {
+  const res = await fetch("/api/vote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ matchId, player }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Kunne ikke gemme stemme.");
+  return data;
 }
 
 // Formatér et ISO-tidspunkt til dansk tid (håndterer automatisk sommer-/vintertid).
@@ -349,7 +402,8 @@ function reducer(state, action) {
     case "SET_SQUAD":
       return { ...state, squadNames: [...action.names].sort((a, b) => a.localeCompare(b, "da")) };
     case "SET_DBU_API_SETTINGS":
-      return { ...state, dbuApiKey: action.apiKey || "", dbuPoolId: action.poolId || "", dbuTeamId: action.teamId || "" };
+      // API-nøgle gemmes kun lokalt i sessionStorage – aldrig i delt state.
+      return { ...state, dbuPoolId: action.poolId || "", dbuTeamId: action.teamId || "" };
     case "SET_MATCHES":
       // Bruges ved opdatering INDEN FOR samme sæson – fx et tidspunkt der ændres.
       // Stemmer/statistik rører vi ikke, de er koblet til kampens DBU-nummer.
@@ -368,7 +422,7 @@ function reducer(state, action) {
     case "DELETE_LAUNDRY_ENTRY":
       return { ...state, laundryHistory: (state.laundryHistory || []).filter(e => String(e.id) !== String(action.id)) };
     case "IMPORT_STATE":
-      return { ...INIT, ...action.state };
+      return { ...INIT, ...stripSecrets(action.state) };
     case "RESET": {
       const archive = archiveCurrentSeason(state, action.label);
       return { ...INIT, seasonHistory: archive };
@@ -381,7 +435,7 @@ function reducer(state, action) {
 // ============================================================
 // VOTE VIEW
 // ============================================================
-function VoteView({ state, dispatch }) {
+function VoteView({ state, dispatch, voteError }) {
   const { openMatchId, revealed, votedMatches } = state;
   const match = state.matches.find(m => m.id === openMatchId);
   const [playerName, setPlayerName] = useState("");
@@ -406,6 +460,8 @@ function VoteView({ state, dispatch }) {
         <div style={{ fontFamily: F.display, fontSize: "26px", fontWeight: 800, letterSpacing: "0.3px", marginBottom: "2px" }}>🏆 Kampens Spiller 🏆</div>
         <div style={{ color: C.muted, fontSize: "12px" }}>{[state.teamName, state.competition].filter(Boolean).join(" · ") || "Hent kampprogram i Admin for at komme i gang"}</div>
       </div>
+
+      {voteError && <div style={S.err}>{voteError}</div>}
 
       {!openMatchId ? (
         <div style={S.card}>
@@ -595,24 +651,69 @@ function RankingView({ state }) {
 // ============================================================
 // ADMIN VIEW
 // ============================================================
-function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatchId, setLaundryMatchId }) {
+function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatchId, setLaundryMatchId, onSaveError }) {
   const [authed, setAuthed] = useState(false);
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
   const [tab, setTab] = useState("matches");
   const [resetLabel, setResetLabel] = useState(`Sæson ${new Date().getFullYear()}`);
   const [resettingAll, setResettingAll] = useState(false);
 
+  useEffect(() => {
+    const token = getAdminToken();
+    if (!token) return;
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/admin-login", { headers: { Authorization: `Bearer ${token}` } });
+        if (active && res.ok) setAuthed(true);
+        else if (active) setAdminToken("");
+      } catch {
+        /* offline – kræv nyt login */
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  async function handleLogin() {
+    setPwErr("");
+    setLoggingIn(true);
+    try {
+      const res = await fetch("/api/admin-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Forkert adgangskode.");
+      setAdminToken(data.token);
+      setAuthed(true);
+      setPw("");
+    } catch (e) {
+      setPwErr(e.message || "Forkert adgangskode.");
+      setAdminToken("");
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
+  function handleLogout() {
+    setAdminToken("");
+    setAuthed(false);
+    setPw("");
+  }
+
   if (!authed) return (
     <div style={S.card}>
       <div style={{ fontSize: "18px", fontWeight: 700, marginBottom: "4px" }}>Admin</div>
-      <div style={{ color: C.muted, fontSize: "13px", marginBottom: "18px" }}>Log ind for at styre afstemning og statistik.</div>
+      <div style={{ color: C.muted, fontSize: "13px", marginBottom: "18px" }}>Log ind for at styre afstemning og statistik. Adgangskoden tjekkes på serveren.</div>
       {pwErr && <div style={S.err}>{pwErr}</div>}
       <label style={S.label}>Adgangskode</label>
       <input style={S.input} type="password" placeholder="••••••••" value={pw}
         onChange={e => setPw(e.target.value)}
-        onKeyDown={e => { if (e.key === "Enter") pw === ADMIN_PASSWORD ? (setAuthed(true), setPwErr("")) : setPwErr("Forkert adgangskode."); }} />
-      <button style={S.btn("primary")} onClick={() => pw === ADMIN_PASSWORD ? (setAuthed(true), setPwErr("")) : setPwErr("Forkert adgangskode.")}>Log ind</button>
+        onKeyDown={e => { if (e.key === "Enter" && !loggingIn) handleLogin(); }} />
+      <button style={S.btn("primary")} onClick={handleLogin} disabled={loggingIn}>{loggingIn ? "Logger ind…" : "Log ind"}</button>
     </div>
   );
 
@@ -626,7 +727,11 @@ function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatc
 
   return (
     <div style={S.card}>
-      <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "14px" }}>Admin-panel</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "14px", flexWrap: "wrap" }}>
+        <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px" }}>Admin-panel</div>
+        <button title="Log ud af admin" style={{ ...S.btn("secondary", false), fontSize: "11px" }} onClick={handleLogout}>Log ud</button>
+      </div>
+      {onSaveError && <div style={S.err}>{onSaveError}</div>}
       <div style={{ display: "flex", gap: "5px", marginBottom: "18px", borderBottom: `1px solid ${C.border}`, paddingBottom: "14px", flexWrap: "wrap" }}>
         {tabs.map(t => (
           <button key={t.id} title={t.title} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? "rgba(34,197,94,0.12)" : "transparent", color: tab === t.id ? "#4ade80" : C.muted, border: `1px solid ${tab === t.id ? "rgba(34,197,94,0.35)" : "transparent"}`, borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontFamily: F.body, fontSize: "12px", fontWeight: 700, letterSpacing: "0.2px" }}>{t.label}</button>
@@ -804,7 +909,11 @@ function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
     if (!dbuUrl.trim() || !/dbu\.dk/i.test(dbuUrl)) { setFetchErr("Indsæt et gyldigt DBU kampinfo-link."); return; }
     setFetching(true);
     try {
-      const res = await fetch(`/api/kampinfo?url=${encodeURIComponent(dbuUrl.trim())}`);
+      const res = await fetch("/api/kampinfo", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({ url: dbuUrl.trim() }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampinfo.");
       setRawFetch(data);
@@ -973,7 +1082,11 @@ function SquadTab({ state, dispatch }) {
     if (!dbuUrl.trim() || !/dbu\.dk/i.test(dbuUrl)) { setFetchErr("Indsæt et gyldigt DBU kampinfo-link (skal indeholde dbu.dk)."); return; }
     setFetching(true);
     try {
-      const res = await fetch(`/api/kampinfo?url=${encodeURIComponent(dbuUrl.trim())}`);
+      const res = await fetch("/api/kampinfo", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({ url: dbuUrl.trim() }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampinfo.");
       if (!data.squads || !Object.keys(data.squads).length) throw new Error("Fandt ingen holdopstilling på siden – kampen er måske ikke afviklet endnu.");
@@ -1054,8 +1167,8 @@ function DbuImportTab({ state, dispatch }) {
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState(null);
 
-  const [apiKey, setApiKey] = useState(state.dbuApiKey || "");
-  const hasApiSettings = !!(state.dbuApiKey && state.dbuPoolId && state.dbuTeamId);
+  const [apiKey, setApiKey] = useState(() => getDbuApiKey() || "");
+  const hasApiSettings = !!(getDbuApiKey() && state.dbuPoolId && state.dbuTeamId);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [poolId, setPoolId] = useState(state.dbuPoolId || "");
   const [teamId, setTeamId] = useState(state.dbuTeamId || "");
@@ -1079,9 +1192,14 @@ function DbuImportTab({ state, dispatch }) {
   async function findMyTeams() {
     setTeamErr(""); setTeamList(null);
     if (!apiKey.trim()) { setTeamErr("Indsæt API-nøglen først."); return; }
+    if (!getAdminToken()) { setTeamErr("Log ind som admin først."); return; }
     setFindingTeams(true);
     try {
-      const res = await fetch(`/api/dbu-teams?apiKey=${encodeURIComponent(apiKey.trim())}`);
+      const res = await fetch("/api/dbu-teams", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+      });
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente holdliste.");
       if (data.teams.length === 1) {
@@ -1097,11 +1215,16 @@ function DbuImportTab({ state, dispatch }) {
     }
   }
 
-  async function fetchFrom(fetchUrl) {
+  async function fetchFromBody(body) {
     setErr(""); setMsg(null); setPreview(null); setSelectedTeam("");
     setLoading(true);
     try {
-      const res = await fetch(fetchUrl);
+      if (!getAdminToken()) throw new Error("Log ind som admin først.");
+      const res = await fetch("/api/kampprogram", {
+        method: "POST",
+        headers: adminHeaders(),
+        body: JSON.stringify(body),
+      });
       const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampprogrammet.");
       if (!data.matches || !data.matches.length) throw new Error("Fandt ingen kampe.");
@@ -1121,28 +1244,32 @@ function DbuImportTab({ state, dispatch }) {
     setPoolId(newPoolId);
     setTeamId(newTeamId);
     setTeamList(null);
-    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: apiKey.trim(), poolId: newPoolId, teamId: newTeamId });
-    fetchFrom(`/api/kampprogram?apiKey=${encodeURIComponent(apiKey.trim())}&poolId=${encodeURIComponent(newPoolId)}&teamId=${encodeURIComponent(newTeamId)}`);
+    setDbuApiKeyLocal(apiKey.trim());
+    dispatch({ type: "SET_DBU_API_SETTINGS", poolId: newPoolId, teamId: newTeamId });
+    fetchFromBody({ apiKey: apiKey.trim(), poolId: newPoolId, teamId: newTeamId });
   }
 
   function saveAdvancedAndFetch() {
-    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: apiKey.trim(), poolId: poolId.trim(), teamId: teamId.trim() });
-    fetchFrom(`/api/kampprogram?apiKey=${encodeURIComponent(apiKey.trim())}&poolId=${encodeURIComponent(poolId.trim())}&teamId=${encodeURIComponent(teamId.trim())}`);
+    setDbuApiKeyLocal(apiKey.trim());
+    dispatch({ type: "SET_DBU_API_SETTINGS", poolId: poolId.trim(), teamId: teamId.trim() });
+    fetchFromBody({ apiKey: apiKey.trim(), poolId: poolId.trim(), teamId: teamId.trim() });
   }
 
   function handleFetchOfficial() {
-    if (!hasApiSettings) return;
-    fetchFrom(`/api/kampprogram?apiKey=${encodeURIComponent(state.dbuApiKey)}&poolId=${encodeURIComponent(state.dbuPoolId)}&teamId=${encodeURIComponent(state.dbuTeamId)}`);
+    const key = getDbuApiKey() || apiKey.trim();
+    if (!key || !state.dbuPoolId || !state.dbuTeamId) return;
+    fetchFromBody({ apiKey: key, poolId: state.dbuPoolId, teamId: state.dbuTeamId });
   }
 
   function disconnectApi() {
-    dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: "", poolId: "", teamId: "" });
+    dispatch({ type: "SET_DBU_API_SETTINGS", poolId: "", teamId: "" });
+    setDbuApiKeyLocal("");
     setApiKey(""); setPoolId(""); setTeamId(""); setTeamList(null); setPreview(null);
   }
 
   function handleFetchLink() {
     if (!url.trim() || !/dbu\.dk/i.test(url)) { setErr("Indsæt et gyldigt DBU-link (skal indeholde dbu.dk)."); return; }
-    fetchFrom(`/api/kampprogram?url=${encodeURIComponent(url.trim())}`);
+    fetchFromBody({ url: url.trim() });
   }
 
   // Alle holdnavne der optræder i kampene – bruges som valgmuligheder, hvis auto-genkendelsen skal rettes.
@@ -1215,7 +1342,7 @@ function DbuImportTab({ state, dispatch }) {
               </div>
               <button style={{ ...S.btn(loading ? "secondary" : "primary"), marginBottom: "10px" }} onClick={handleFetchOfficial} disabled={loading}>{loading ? "Henter…" : "Hent kampprogram"}</button>
               <div style={{ display: "flex", gap: "14px" }}>
-                <button onClick={() => { setTeamList(null); dispatch({ type: "SET_DBU_API_SETTINGS", apiKey: state.dbuApiKey, poolId: "", teamId: "" }); }} style={{ background: "transparent", border: "none", color: C.blue, fontSize: "12px", cursor: "pointer", padding: 0 }}>Skift hold</button>
+                <button onClick={() => { setTeamList(null); dispatch({ type: "SET_DBU_API_SETTINGS", poolId: "", teamId: "" }); }} style={{ background: "transparent", border: "none", color: C.blue, fontSize: "12px", cursor: "pointer", padding: 0 }}>Skift hold</button>
                 <button onClick={disconnectApi} style={{ background: "transparent", border: "none", color: C.muted, fontSize: "12px", cursor: "pointer", padding: 0 }}>Fjern forbindelse</button>
               </div>
             </>
@@ -1515,7 +1642,8 @@ function BackupTab({ state, dispatch }) {
   }
 
   function exportJson() {
-    downloadBlob(JSON.stringify(state, null, 2), `${slugify(state.teamName)}-backup.json`, "application/json");
+    const { votedMatches, ...shared } = state;
+    downloadBlob(JSON.stringify(stripSecrets(shared), null, 2), `${slugify(state.teamName)}-backup.json`, "application/json");
     setMsg({ type: "ok", text: "backup.json downloadet." });
   }
 
@@ -1647,6 +1775,8 @@ export default function App() {
   const [state, setStateRaw] = useState(() => ({ ...INIT_SHARED, ...loadPersonal() }));
   const [ready, setReady] = useState(false);
   const [connError, setConnError] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [voteError, setVoteError] = useState("");
   // Holdes her (ikke inde i StatsTab/LaundryTab), så det IKKE nulstilles ved faneskift.
   const [statsMatchId, setStatsMatchId] = useState(null);
   const [laundryMatchId, setLaundryMatchId] = useState("");
@@ -1665,7 +1795,7 @@ export default function App() {
       .channel("st70-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "kv_store", filter: `key=eq.${SHARED_KEY}` }, (payload) => {
         if (payload.new && payload.new.value) {
-          setStateRaw(prev => ({ ...prev, ...payload.new.value, _lastUpdated: payload.new.updated_at || prev._lastUpdated }));
+          setStateRaw(prev => ({ ...prev, ...stripSecrets(payload.new.value), _lastUpdated: payload.new.updated_at || prev._lastUpdated }));
         }
       })
       .subscribe((status) => {
@@ -1676,13 +1806,55 @@ export default function App() {
   }, []);
 
   function dispatch(action) {
+    setSaveError("");
+    setVoteError("");
+
+    // Offentlige stemmer går via /api/vote (service role) – klienten må ikke skrive direkte.
+    if (action.type === "VOTE") {
+      setStateRaw(prev => {
+        const next = reducer(prev, action);
+        const { votedMatches } = next;
+        savePersonal({ votedMatches });
+        submitVoteViaApi(action.matchId, action.player)
+          .then(data => {
+            if (data.shared) {
+              setStateRaw(cur => ({
+                ...cur,
+                ...stripSecrets(data.shared),
+                votedMatches: cur.votedMatches,
+                _lastUpdated: data.updated_at || cur._lastUpdated,
+              }));
+            }
+          })
+          .catch(async err => {
+            console.error(err);
+            setVoteError(err.message || "Stemme kunne ikke gemmes.");
+            const shared = await loadSharedFromSupabase();
+            setStateRaw(cur => {
+              const votedMatches = { ...(cur.votedMatches || {}) };
+              delete votedMatches[action.matchId];
+              savePersonal({ votedMatches });
+              return { ...cur, ...shared, votedMatches };
+            });
+          });
+        return next;
+      });
+      return;
+    }
+
+    // Alle øvrige mutationer kræver admin-session og gemmes via /api/shared-save.
     setStateRaw(prev => {
       const next = reducer(prev, action);
       const { votedMatches, _lastUpdated, ...shared } = next;
-      savePersonal({ votedMatches });          // personlig – gemmes lokalt med det samme
-      saveSharedToSupabase(shared).then(nowIso => {
-        setStateRaw(cur => ({ ...cur, _lastUpdated: nowIso }));
-      });
+      savePersonal({ votedMatches });
+      saveSharedViaApi(shared)
+        .then(nowIso => {
+          setStateRaw(cur => ({ ...cur, _lastUpdated: nowIso }));
+        })
+        .catch(err => {
+          console.error(err);
+          setSaveError(err.message || "Kunne ikke gemme ændringen.");
+        });
       return next;
     });
   }
@@ -1730,10 +1902,10 @@ export default function App() {
         </div>
       </div>
       <div style={{ width: "100%", maxWidth: "600px", padding: "12px 14px 60px" }}>
-        {view === "vote"    && <VoteView    state={state} dispatch={dispatch} />}
+        {view === "vote"    && <VoteView    state={state} dispatch={dispatch} voteError={voteError} />}
         {view === "ranking" && <RankingView state={state} />}
         {view === "stats"   && <StatsView   state={state} />}
-        {view === "admin"   && <AdminView   state={state} dispatch={dispatch} statsMatchId={statsMatchId} setStatsMatchId={setStatsMatchId} laundryMatchId={laundryMatchId} setLaundryMatchId={setLaundryMatchId} />}
+        {view === "admin"   && <AdminView   state={state} dispatch={dispatch} statsMatchId={statsMatchId} setStatsMatchId={setStatsMatchId} laundryMatchId={laundryMatchId} setLaundryMatchId={setLaundryMatchId} onSaveError={saveError} />}
       </div>
     </div>
   );
