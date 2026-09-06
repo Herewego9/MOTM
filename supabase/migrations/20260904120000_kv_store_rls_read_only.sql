@@ -26,7 +26,9 @@ create policy "kv_store_select_anon"
   using (true);
 
 -- Ingen insert/update/delete for anon/authenticated.
--- service_role bypasser RLS og bruges kun fra /api/*.
-
 revoke insert, update, delete on public.kv_store from anon, authenticated;
 grant select on public.kv_store to anon, authenticated;
+
+-- service_role skal eksplicit have fuld adgang (bypasser RLS, men kræver stadig GRANT).
+grant usage on schema public to service_role;
+grant all on table public.kv_store to service_role;

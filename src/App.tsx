@@ -8,7 +8,42 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // ==========================================================================
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const missingClientEnv = [];
+if (!SUPABASE_URL) missingClientEnv.push("VITE_SUPABASE_URL");
+if (!SUPABASE_ANON_KEY) missingClientEnv.push("VITE_SUPABASE_ANON_KEY");
+
+// Undgå hvid blank crash når VITE_*-keys mangler i Vercel-buildet.
+const supabase = missingClientEnv.length
+  ? null
+  : createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+function MissingEnvScreen({ missing }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "#0a1210", color: "#f2f5f1", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, system-ui, sans-serif", padding: "24px" }}>
+      <div style={{ maxWidth: "480px", background: "#121e19", border: "1px solid #25362d", borderRadius: "14px", padding: "28px", boxShadow: "0 4px 18px rgba(0,0,0,0.28)" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: "26px", fontWeight: 800, marginBottom: "10px" }}>⚠️ Appen mangler opsætning</div>
+        <div style={{ fontSize: "14px", color: "#8fa396", lineHeight: 1.6, marginBottom: "14px" }}>
+          Siden er blank, fordi disse Vercel-miljøvariabler mangler (eller ikke er med i sidste deploy):
+        </div>
+        <ul style={{ margin: "0 0 16px 18px", color: "#f87171", fontSize: "13px", lineHeight: 1.7 }}>
+          {missing.map(name => <li key={name}><code style={{ color: "#fde047" }}>{name}</code></li>)}
+        </ul>
+        <div style={{ fontSize: "13px", color: "#8fa396", lineHeight: 1.65 }}>
+          <strong style={{ color: "#f2f5f1" }}>Sådan fikser du det:</strong>
+          <ol style={{ margin: "8px 0 0 18px" }}>
+            <li>Vercel → Project → Settings → Environment Variables</li>
+            <li>Tilføj <code style={{ color: "#fde047" }}>VITE_SUPABASE_ANON_KEY</code> = Supabase <em>anon</em> / <em>public</em>-nøglen (ikke service_role)</li>
+            <li>Tjek også at <code style={{ color: "#fde047" }}>VITE_SUPABASE_URL</code> er sat</li>
+            <li><strong style={{ color: "#f2f5f1" }}>Redeploy</strong> bagefter — VITE_*-værdier indlejres først ved build</li>
+          </ol>
+          <div style={{ marginTop: "12px" }}>
+            <code style={{ color: "#fde047" }}>SUPABASE_SERVICE_ROLE_KEY</code> og <code style={{ color: "#fde047" }}>ADMIN_PASSWORD</code> er kun til serveren — de gør ikke klienten synlig alene.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Kampdata (stemmer, statistik, m.m.) er DELT mellem alle der bruger appen – ligger i Supabase.
 // "Har jeg stemt"-status er PERSONLIG for denne enhed – ligger i localStorage.
@@ -155,6 +190,7 @@ function opponent(m, teamName) { return isHome(m, teamName) ? m.away : m.home; }
 
 // ---- Storage: læs via anon (RLS), skriv via server-API (service role) ----
 async function loadSharedFromSupabase() {
+  if (!supabase) return { ...INIT_SHARED };
   try {
     const { data, error } = await supabase.from("kv_store").select("value, updated_at").eq("key", SHARED_KEY).maybeSingle();
     if (error) throw error;
@@ -1822,6 +1858,10 @@ function BackupTab({ state, dispatch }) {
 // APP
 // ============================================================
 export default function App() {
+  if (missingClientEnv.length) {
+    return <MissingEnvScreen missing={missingClientEnv} />;
+  }
+
   const [view, setView] = useState("vote");
   const [state, setStateRaw] = useState(() => ({ ...INIT_SHARED, ...loadPersonal() }));
   const [ready, setReady] = useState(false);
@@ -1841,6 +1881,8 @@ export default function App() {
       setStateRaw(prev => ({ ...prev, ...shared }));
       setReady(true);
     })();
+
+    if (!supabase) return () => { active = false; };
 
     const channel = supabase
       .channel("st70-live")

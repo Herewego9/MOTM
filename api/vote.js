@@ -53,6 +53,10 @@ export default async function handler(req, res) {
     return res.status(200).json({ shared: next, updated_at });
   } catch (e) {
     console.error("vote error:", e);
-    return res.status(e.statusCode || 500).json({ error: e.message || "Kunne ikke gemme stemme." });
+    const msg = e?.message || "Kunne ikke gemme stemme.";
+    const hint = /permission denied/i.test(msg)
+      ? " Tjek at SUPABASE_SERVICE_ROLE_KEY matcher projektet, og kør GRANT ALL ON public.kv_store TO service_role; i Supabase SQL."
+      : "";
+    return res.status(e.statusCode || 500).json({ error: msg + hint });
   }
 }
