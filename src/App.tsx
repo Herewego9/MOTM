@@ -295,7 +295,7 @@ function computeLaundryPool(squadNames, laundryHistory, excludeName) {
     if (recent.size >= eligibleSquad.length) break; // alle kvalificerede er lige dækket
   }
   const pool = eligibleSquad.filter(n => !recent.has(n));
-  return pool.length ? pool : eligibleSquad; // alle (undtagen MVP) har haft en tur → ny runde starter
+  return pool.length ? pool : eligibleSquad; // alle (undtagen kampens spiller) har haft en tur → ny runde starter
 }
 
 // ============================================================
@@ -475,11 +475,13 @@ function reducer(state, action) {
 // ============================================================
 // VOTE VIEW
 // ============================================================
-function VoteView({ state, dispatch, voteError }) {
-  const { openMatchId, revealed, votedMatches, matchStats } = state;
+
+function VoteView({ state, dispatch, voteError, onNavigate }) {
+  const { openMatchId, revealed, votedMatches, matchStats, votes } = state;
   const match = state.matches.find(m => m.id === openMatchId);
   const [playerName, setPlayerName] = useState("");
   const [err, setErr] = useState("");
+  const [showSchedule, setShowSchedule] = useState(false);
 
   useEffect(() => { setPlayerName(""); setErr(""); }, [openMatchId]);
 
@@ -487,6 +489,9 @@ function VoteView({ state, dispatch, voteError }) {
   const alreadyVotedFor = openMatchId ? votedMatches[openMatchId] : null;
   const openIsRevealed = openMatchId ? !!revealed[openMatchId] : false;
   const openMotmName = openMatchId ? matchStats[openMatchId]?.motmName : null;
+  const openVoteCount = openMatchId
+    ? Object.values(votes[openMatchId] || {}).reduce((a, b) => a + (b.count || 0), 0)
+    : 0;
 
   // Seneste afslørede kamp (til fejring når der ikke er en åben afstemning).
   const latestRevealed = [...(state.matches || [])]
@@ -494,62 +499,87 @@ function VoteView({ state, dispatch, voteError }) {
     .sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))[0];
   const latestMotm = latestRevealed ? matchStats[latestRevealed.id]?.motmName : null;
 
-  function handleVote() {
-    if (!playerName.trim()) { setErr("Skriv navnet på kampens MVP."); return; }
-    dispatch({ type: "VOTE", matchId: openMatchId, player: playerName.trim() });
-  }
+  // Næste kommende (eller seneste uafsluttede) kamp – giver idle-skærmen retning.
+  const nextMatch = [...(state.matches || [])]
+    .filter(m => !revealed[m.id])
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0]
+    || latestRevealed
+    || null;
 
   // Spillertruppen vises altid i alfabetisk rækkefølge (ikke statistik-relateret).
   const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
 
+  function handleVote() {
+    if (!squad.length) { setErr("Truppen mangler – admin skal udfylde spillerlisten først."); return; }
+    if (!playerName.trim()) { setErr("Vælg kampens spiller."); return; }
+    dispatch({ type: "VOTE", matchId: openMatchId, player: playerName.trim() });
+  }
+
+  const brand = state.teamName || "Kampens Spiller";
+  const subBrand = [state.competition, state.teamName ? "Kampens Spiller" : null].filter(Boolean).join(" · ")
+    || "Hent kampprogram i Admin for at komme i gang";
+
+  function matchLine(m) {
+    if (!m) return null;
+    const vs = opponent(m, state.teamName);
+    const place = isHome(m, state.teamName) ? "Hjemme" : "Ude";
+    return `${fmtDate(m.date)} · ${m.time || ""} · ${vs} (${place})`.replace(/ ·  · /, " · ");
+  }
+
   return (
     <div>
-      <div style={{ marginBottom: "16px" }}>
-        <div style={{ fontFamily: F.display, fontSize: "26px", fontWeight: 800, letterSpacing: "0.3px", marginBottom: "2px" }}>🏆 Kampens Spiller 🏆</div>
-        <div style={{ color: C.muted, fontSize: "12px" }}>{[state.teamName, state.competition].filter(Boolean).join(" · ") || "Hent kampprogram i Admin for at komme i gang"}</div>
+      <div style={{ marginBottom: "18px" }}>
+        <div style={{ fontFamily: F.display, fontSize: "32px", fontWeight: 800, letterSpacing: "0.4px", lineHeight: 1.05, color: C.text }}>{brand}</div>
+        <div style={{ color: C.muted, fontSize: "13px", marginTop: "4px" }}>{subBrand}</div>
       </div>
 
       {voteError && <div style={S.err}>{voteError}</div>}
 
       {!openMatchId ? (
-        <div style={S.card}>
+        <div style={{ marginTop: "4px", paddingBottom: "8px", borderBottom: `1px solid ${C.border}` }}>
           {latestMotm ? (
-            <div style={{ textAlign: "center", padding: "20px 0" }}>
-              <div style={{ fontSize: "42px", marginBottom: "10px" }}>⭐</div>
-              <div style={{ fontSize: "14px", color: C.muted, marginBottom: "4px" }}>Seneste kampens spiller</div>
-              <div style={{ fontFamily: F.display, fontSize: "28px", fontWeight: 800, color: C.gold, letterSpacing: "0.3px", marginBottom: "6px" }}>{latestMotm}</div>
-              <div style={{ color: C.muted, fontSize: "12px" }}>{fmtDate(latestRevealed.date)} · {opponent(latestRevealed, state.teamName)}</div>
-              <div style={{ color: C.muted, fontSize: "12px", marginTop: "14px" }}>Admin åbner den næste afstemning efter kampen.</div>
+            <div>
+              <div style={{ fontSize: "12px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: "6px" }}>Seneste kampens spiller</div>
+              <div style={{ fontFamily: F.display, fontSize: "30px", fontWeight: 800, color: C.gold, letterSpacing: "0.3px", marginBottom: "4px" }}>{latestMotm}</div>
+              <div style={{ color: C.muted, fontSize: "13px", marginBottom: "14px" }}>{matchLine(latestRevealed)}</div>
             </div>
-          ) : (
-            <div style={{ textAlign: "center", padding: "24px 0" }}>
-              <div style={{ fontSize: "34px", marginBottom: "10px" }}>🔒</div>
-              <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "5px" }}>Ingen aktiv afstemning</div>
-              <div style={{ color: C.muted, fontSize: "13px" }}>Admin åbner afstemningen efter kampen.</div>
-            </div>
+          ) : null}
+          <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 700, marginBottom: "4px" }}>
+            {latestMotm ? "Afstemning lukket" : "Ingen aktiv afstemning"}
+          </div>
+          <div style={{ color: C.muted, fontSize: "13px", lineHeight: 1.55, marginBottom: "14px", maxWidth: "420px" }}>
+            {nextMatch && !revealed[nextMatch.id]
+              ? `Næste kamp: ${matchLine(nextMatch)}. Afstemningen åbnes efter kampen.`
+              : "Admin åbner afstemningen efter kampen."}
+          </div>
+          {onNavigate && (
+            <button type="button" style={{ ...S.btn("secondary", false), marginBottom: "8px" }} onClick={() => onNavigate("ranking")}>
+              Se sæsonens rangliste
+            </button>
           )}
         </div>
       ) : alreadyVotedFor && openIsRevealed && openMotmName ? (
-        <div style={{ ...S.card, textAlign: "center" }}>
-          <div style={{ fontSize: "42px", marginBottom: "10px" }}>⭐</div>
-          <div style={{ fontSize: "14px", color: C.muted, marginBottom: "4px" }}>Kampens spiller er</div>
-          <div style={{ fontFamily: F.display, fontSize: "28px", fontWeight: 800, color: C.gold, letterSpacing: "0.3px", marginBottom: "8px" }}>{openMotmName}</div>
+        <div style={{ marginTop: "4px", paddingBottom: "16px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: "12px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: "6px" }}>Kampens spiller er</div>
+          <div style={{ fontFamily: F.display, fontSize: "30px", fontWeight: 800, color: C.gold, letterSpacing: "0.3px", marginBottom: "8px" }}>{openMotmName}</div>
           <div style={{ color: C.muted, fontSize: "13px" }}>
-            Du stemte på <strong style={{ color: C.text, textTransform: "capitalize" }}>{alreadyVotedFor}</strong>
+            Du stemte på <strong style={{ color: C.text }}>{alreadyVotedFor}</strong>
             {alreadyVotedFor.toLowerCase() === openMotmName.toLowerCase() ? " – godt tip!" : "."}
           </div>
         </div>
       ) : alreadyVotedFor ? (
-        <div style={{ ...S.card, textAlign: "center" }}>
-          <div style={{ fontSize: "42px", marginBottom: "10px" }}>✅</div>
-          <div style={{ fontSize: "18px", fontWeight: 700, marginBottom: "5px" }}>Du har allerede stemt</div>
-          <div style={{ color: C.muted, fontSize: "13px" }}>
-            Du stemte på <strong style={{ color: C.text, textTransform: "capitalize" }}>{alreadyVotedFor}</strong>. Resultatet afsløres, når admin lukker afstemningen.
+        <div style={{ marginTop: "4px", paddingBottom: "16px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, marginBottom: "6px", color: C.accent }}>Tak — din stemme er gemt</div>
+          <div style={{ color: C.muted, fontSize: "13px", lineHeight: 1.55, marginBottom: "10px" }}>
+            Du stemte på <strong style={{ color: C.text }}>{alreadyVotedFor}</strong>. Resultatet kommer, når afstemningen lukkes.
+          </div>
+          <div style={{ fontSize: "13px", color: C.text, fontWeight: 600 }}>
+            {openVoteCount} stemme{openVoteCount !== 1 ? "r" : ""} indtil videre
           </div>
         </div>
       ) : (
-        <div style={S.card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", flexWrap: "wrap", marginBottom: "18px" }}>
+        <div style={{ marginTop: "4px", paddingBottom: "16px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", flexWrap: "wrap", marginBottom: "16px" }}>
             <div>
               <div style={S.h2}>{isHome(match, state.teamName) ? `${state.teamName} vs ` : ""}{opponent(match, state.teamName)}{!isHome(match, state.teamName) ? " (ude)" : " (hjemme)"}</div>
               <div style={{ color: C.muted, fontSize: "12px", marginTop: "2px" }}>{fmtDate(match.date)} · {match.time} · {match.venue}</div>
@@ -557,48 +587,57 @@ function VoteView({ state, dispatch, voteError }) {
             <div style={S.badge(true)}><span style={S.dot(true)} /> Åben</div>
           </div>
           {err && <div style={S.err}>{err}</div>}
-          <label style={{ ...S.label, fontSize: "16px" }}>Hvem er kampens spiller ⭐?</label>
-          {squad.length > 0 ? (
-            <select style={S.input} value={playerName} onChange={e => { setPlayerName(e.target.value); setErr(""); }}>
-              <option value="">— Vælg spiller —</option>
-              {squad.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
+          {!squad.length ? (
+            <div style={S.err}>Truppen er tom. Admin skal udfylde spillerlisten under Admin → Trup, før I kan stemme (undgår stavefejl og delte stemmer).</div>
           ) : (
-            <input style={S.input} placeholder="Fx Anders Nielsen" value={playerName} onChange={e => { setPlayerName(e.target.value); setErr(""); }} onKeyDown={e => e.key === "Enter" && handleVote()} />
+            <>
+              <label style={{ ...S.label, fontSize: "15px" }}>Hvem er kampens spiller?</label>
+              <select style={S.input} value={playerName} onChange={e => { setPlayerName(e.target.value); setErr(""); }}>
+                <option value="">— Vælg spiller —</option>
+                {squad.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <button type="button" style={S.btn("primary")} onClick={handleVote} disabled={!playerName}>Afgiv stemme</button>
+            </>
           )}
-          <button style={S.btn("primary")} onClick={handleVote}>Afgiv stemme ⭐</button>
         </div>
       )}
 
-      <div style={S.card}>
-        <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>Kampprogram</div>
-        {state.matches.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "16px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Admin kan hente det under Admin → Kampprogram.</div>
-        ) : state.matches.map(m => {
-          const isActive = m.id === openMatchId;
-          const done = revealed[m.id];
-          const motm = matchStats[m.id]?.motmName;
-          return (
-            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 11px", borderRadius: "7px", marginBottom: "5px", background: isActive ? "rgba(34,197,94,0.08)" : "transparent", border: isActive ? "1px solid rgba(74,222,128,0.25)" : `1px solid ${C.border}` }}>
-              <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
-              <div style={{ flex: 1, fontSize: "13px", fontWeight: 500 }}>{isHome(m, state.teamName) ? "🏠 " : "✈️ "}{opponent(m, state.teamName)}</div>
-              <div style={{ fontSize: "11px", color: done ? C.gold : isActive ? "#4ade80" : C.muted, fontWeight: isActive || done ? 700 : 400, textAlign: "right", maxWidth: "120px" }}>
-                {done ? (motm ? `⭐ ${motm}` : "✓") : isActive ? "● Åben" : m.time}
-              </div>
-            </div>
-          );
-        })}
+      <div style={{ marginTop: "22px" }}>
+        <button
+          type="button"
+          onClick={() => setShowSchedule(s => !s)}
+          style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", padding: 0, fontFamily: F.body, fontSize: "12px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.6px", display: "flex", alignItems: "center", gap: "8px" }}
+        >
+          Kampprogram <span style={{ fontWeight: 500 }}>{showSchedule ? "▲" : "▼"}</span>
+        </button>
+        {showSchedule && (
+          <div style={{ marginTop: "12px" }}>
+            {state.matches.length === 0 ? (
+              <div style={{ color: C.muted, fontSize: "13px", padding: "8px 0" }}>Intet kampprogram endnu. Admin kan hente det under Admin → Kampe.</div>
+            ) : state.matches.map(m => {
+              const isActive = m.id === openMatchId;
+              const done = revealed[m.id];
+              const winner = matchStats[m.id]?.motmName;
+              return (
+                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 0", borderBottom: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
+                  <div style={{ flex: 1, fontSize: "13px", fontWeight: isActive ? 700 : 500 }}>
+                    <span style={{ color: C.muted, fontSize: "11px", marginRight: "6px" }}>{isHome(m, state.teamName) ? "Hjemme" : "Ude"}</span>
+                    {opponent(m, state.teamName)}
+                  </div>
+                  <div style={{ fontSize: "11px", color: done ? C.gold : isActive ? "#4ade80" : C.muted, fontWeight: isActive || done ? 700 : 400, textAlign: "right", maxWidth: "130px" }}>
+                    {done ? (winner || "Afsluttet") : isActive ? "Åben" : m.time}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ============================================================
-// STATS VIEW (public, fuld tabel)
-// ============================================================
-// ============================================================
-// SÆSON-VÆLGER (bruges af Statistik og Rangliste)
-// ============================================================
 function SeasonSelector({ state, selectedId, onChange }) {
   const history = state.seasonHistory || [];
   if (!history.length) return null; // ingen arkiverede sæsoner endnu – ingen grund til at vise vælgeren
@@ -612,39 +651,105 @@ function SeasonSelector({ state, selectedId, onChange }) {
   );
 }
 
-function StatsView({ state }) {
+
+function RankingView({ state }) {
   const [selectedId, setSelectedId] = useState("current");
+  const [mode, setMode] = useState("ranking"); // "ranking" | "stats"
+  const [showPoints, setShowPoints] = useState(false);
   const archived = selectedId !== "current" ? (state.seasonHistory || []).find(s => String(s.id) === String(selectedId)) : null;
   const matchStatsSource = archived ? archived.matchStats : state.matchStats;
 
   const seasonStats = deriveSeasonStats(matchStatsSource);
-  // Samme rækkefølge som Ranglisten: point først, derefter MOTM/mål/assist.
-  const players = Object.values(seasonStats).sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
+  const players = Object.values(seasonStats)
+    .map(p => ({ ...p, score: scorePlayer(p) }))
+    .sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
+
+  const medal = i => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
+  const maxScore = players[0]?.score || 1;
+  const barColor = i => i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#d4a574" : C.muted;
+
   const cols = [
     { label: "Med stats", key: "matchesPlayed", emoji: "⚽", title: "Kampe med registreret statistik (mål, assist eller kort) – ikke nødvendigvis kampe spillet" },
     { label: "Mål", key: "goals", emoji: "🥅", title: "Mål" },
     { label: "Assist", key: "assists", emoji: "🎯", title: "Assist" },
     { label: "Gult", key: "yellowCards", emoji: "🟨", title: "Gule kort" },
     { label: "Rødt", key: "redCards", emoji: "🟥", title: "Røde kort" },
-    { label: "MOTM", key: "motmWins", emoji: "⭐", title: "Kampens spiller (MOTM)" },
+    { label: "KS", key: "motmWins", emoji: "⭐", title: "Kampens spiller" },
   ];
+
+  const tabBtn = (id, label) => (
+    <button
+      type="button"
+      key={id}
+      onClick={() => setMode(id)}
+      style={{
+        background: mode === id ? "rgba(34,197,94,0.12)" : "transparent",
+        color: mode === id ? "#4ade80" : C.muted,
+        border: `1px solid ${mode === id ? "rgba(34,197,94,0.35)" : "transparent"}`,
+        borderRadius: "8px", padding: "6px 12px", cursor: "pointer",
+        fontFamily: F.body, fontSize: "12px", fontWeight: 700, letterSpacing: "0.2px",
+      }}
+    >{label}</button>
+  );
 
   return (
     <div>
       <SeasonSelector state={state} selectedId={selectedId} onChange={setSelectedId} />
+      <div style={{ display: "flex", gap: "6px", marginBottom: "14px", flexWrap: "wrap" }}>
+        {tabBtn("ranking", "Rangliste")}
+        {tabBtn("stats", "Detaljer")}
+      </div>
+
       {!players.length ? (
-        <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen statistik {archived ? "for denne sæson" : "endnu"}.</div></div>
+        <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>
+          {mode === "stats" ? `Ingen statistik ${archived ? "for denne sæson" : "endnu"}.` : "Ranglisten opdateres, når der er registreret statistik."}
+        </div></div>
+      ) : mode === "ranking" ? (
+        <div style={S.card}>
+          <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>{archived ? archived.label : "Sæsonens rangliste"}</div>
+          <button
+            type="button"
+            onClick={() => setShowPoints(v => !v)}
+            style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", padding: 0, marginBottom: showPoints ? "8px" : "18px", fontFamily: F.body, fontSize: "12px", fontWeight: 600 }}
+          >
+            {showPoints ? "Skjul pointforklaring ▲" : "Sådan tæller point ▼"}
+          </button>
+          {showPoints && (
+            <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px", lineHeight: 1.6 }}>
+              Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort.<br />
+              Mål/assist kan højst give {MAX_GOAL_ASSIST_POINTS_PER_MATCH} point i én kamp – kampens spiller-titlen giver derfor altid flest point den kamp.
+            </div>
+          )}
+          {players.map((p, i) => (
+            <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
+              <div style={i < 3
+                ? { fontSize: "22px", width: "30px", textAlign: "center" }
+                : { fontSize: "12px", width: "30px", height: "30px", borderRadius: "50%", background: C.surfaceRaised, border: `1px solid ${C.border}`, color: C.muted, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.display }
+              }>{medal(i)}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: F.display, fontWeight: i === 0 ? 700 : 600, fontSize: "17px", letterSpacing: "0.2px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
+                <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "2px" }}>
+                  <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
+                </div>
+                <div style={{ height: "4px", background: C.border, borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: barColor(i), borderRadius: "2px" }} />
+                </div>
+              </div>
+              <div style={{ fontFamily: F.display, fontSize: "24px", fontWeight: 800, color: i === 0 ? C.gold : C.text, minWidth: "34px", textAlign: "right" }}>{p.score}</div>
+            </div>
+          ))}
+        </div>
       ) : (
         <div style={S.card}>
           <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
           <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.55 }}>
-            ⚽ <strong style={{ color: C.text, fontWeight: 600 }}>Med stats</strong> = kampe, hvor spilleren har fået registreret mål, assist eller kort — ikke hvor mange kampe de har spillet.
+            <strong style={{ color: C.text, fontWeight: 600 }}>Med stats</strong> = kampe, hvor spilleren har fået registreret mål, assist eller kort — ikke hvor mange kampe de har spillet.
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left", padding: "7px 8px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}` }}>Spiller</th>
+                  <th style={{ textAlign: "left", padding: "7px 8px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}`, position: "sticky", left: 0, background: C.surface, zIndex: 1 }}>Spiller</th>
                   {cols.map(c => (
                     <th key={c.key} style={{ textAlign: "center", padding: "7px 4px", color: C.muted, fontSize: "11px", borderBottom: `1px solid ${C.border}`, verticalAlign: "bottom" }} title={c.title}>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px", lineHeight: 1.15 }}>
@@ -658,7 +763,7 @@ function StatsView({ state }) {
               <tbody>
                 {players.map((p, i) => (
                   <tr key={p.name} style={{ background: i === 0 ? "rgba(242,181,68,0.08)" : "transparent" }}>
-                    <td style={{ padding: "8px 8px", fontWeight: i === 0 ? 700 : 500, color: i === 0 ? C.gold : C.text, borderBottom: `1px solid ${C.border}` }}>{i === 0 ? "⭐ " : ""}{p.name}</td>
+                    <td style={{ padding: "8px 8px", fontWeight: i === 0 ? 700 : 500, color: i === 0 ? C.gold : C.text, borderBottom: `1px solid ${C.border}`, position: "sticky", left: 0, background: i === 0 ? "#1a2416" : C.surface, zIndex: 1 }}>{i === 0 ? "⭐ " : ""}{p.name}</td>
                     {cols.map(c => <td key={c.key} style={{ textAlign: "center", padding: "8px 5px", borderBottom: `1px solid ${C.border}`, color: (p[c.key] || 0) > 0 ? C.text : C.muted, fontWeight: (p[c.key] || 0) > 0 ? 600 : 400 }}>{p[c.key] || 0}</td>)}
                   </tr>
                 ))}
@@ -671,61 +776,6 @@ function StatsView({ state }) {
   );
 }
 
-// ============================================================
-// RANKING VIEW (automatisk rangliste)
-// ============================================================
-function RankingView({ state }) {
-  const [selectedId, setSelectedId] = useState("current");
-  const archived = selectedId !== "current" ? (state.seasonHistory || []).find(s => String(s.id) === String(selectedId)) : null;
-  const matchStatsSource = archived ? archived.matchStats : state.matchStats;
-
-  const seasonStats = deriveSeasonStats(matchStatsSource);
-  const players = Object.values(seasonStats)
-    .map(p => ({ ...p, score: scorePlayer(p) }))
-    .sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
-
-  const medal = i => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
-  const maxScore = players[0]?.score || 1;
-
-  return (
-    <div>
-      <SeasonSelector state={state} selectedId={selectedId} onChange={setSelectedId} />
-      {!players.length ? (
-        <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ranglisten opdateres, når der er registreret statistik.</div></div>
-      ) : (
-        <div style={S.card}>
-          <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>🏅 {archived ? archived.label : "Sæsonens rangliste"}</div>
-          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px", lineHeight: 1.6 }}>
-            Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort.<br />
-            Mål/assist kan højst give {MAX_GOAL_ASSIST_POINTS_PER_MATCH} point i én kamp – kampens spiller-titlen giver derfor altid flest point den kamp.
-          </div>
-          {players.map((p, i) => (
-            <div key={p.name} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 4px", borderBottom: i < players.length - 1 ? `1px solid ${C.border}` : "none" }}>
-              <div style={i < 3
-                ? { fontSize: "22px", width: "30px", textAlign: "center" }
-                : { fontSize: "12px", width: "30px", height: "30px", borderRadius: "50%", background: C.surfaceRaised, border: `1px solid ${C.border}`, color: C.muted, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.display }
-              }>{medal(i)}</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: F.display, fontWeight: i === 0 ? 700 : 600, fontSize: "17px", letterSpacing: "0.2px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
-                <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "2px" }}>
-                  <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
-                </div>
-                <div style={{ height: "4px", background: C.border, borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#c084fc" : C.muted, borderRadius: "2px" }} />
-                </div>
-              </div>
-              <div style={{ fontFamily: F.display, fontSize: "24px", fontWeight: 800, color: i === 0 ? C.gold : C.text, minWidth: "34px", textAlign: "right" }}>{p.score}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ============================================================
-// ADMIN VIEW
-// ============================================================
 function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatchId, setLaundryMatchId, onSaveError }) {
   const [authed, setAuthed] = useState(false);
   const [pw, setPw] = useState("");
@@ -842,9 +892,18 @@ function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatc
 function MatchesTab({ state, dispatch }) {
   const [dbuOpen, setDbuOpen] = useState(false);
   const [expandedVotes, setExpandedVotes] = useState(() => new Set());
+  const [expandedMore, setExpandedMore] = useState(() => new Set());
 
   function toggleVotes(id) {
     setExpandedVotes(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleMore(id) {
+    setExpandedMore(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -879,6 +938,7 @@ function MatchesTab({ state, dispatch }) {
         const totalVotes = Object.values(state.votes[m.id] || {}).reduce((a, b) => a + b.count, 0);
         const hasStats = (state.matchStats[m.id]?.players?.length || 0) > 0;
         const votesExpanded = expandedVotes.has(m.id);
+        const moreExpanded = expandedMore.has(m.id);
         return (
           <div key={m.id} style={{ border: `1px solid ${isOpen ? "rgba(74,222,128,0.4)" : C.border}`, borderRadius: "9px", padding: "13px 15px", marginBottom: "9px", background: isOpen ? "rgba(34,197,94,0.05)" : "transparent" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", flexWrap: "wrap" }}>
@@ -895,18 +955,28 @@ function MatchesTab({ state, dispatch }) {
                     onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}
                   >Åbn</button>
                 )}
-                {isOpen && <button title="Lukker afstemningen og afslører kampens MVP" style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
+                {isOpen && <button title="Lukker afstemningen og afslører kampens spiller" style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
                 {isRevealed && (
                   <span style={{ fontSize: "11px", color: "#4ade80" }}>
                     ✓ Afsluttet{state.matchStats[m.id]?.motmName ? ` · ⭐ ${state.matchStats[m.id].motmName}` : ""}
                   </span>
                 )}
-                {totalVotes > 0 && (
-                  <button title="Vis/skjul stemmefordelingen for denne kamp" onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
-                )}
-                <ConfirmButton label="🔄 Nulstil afstemning" title="Sletter kun stemmerne for denne kamp – statistik bevares" style={{ ...S.btn("warn", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_VOTES", matchId: m.id })} />
-                <ConfirmButton label="🗑 Nulstil kamp" title="Sletter stemmer, statistik og resultat for hele kampen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
+                <button
+                  type="button"
+                  title="Flere handlinger for denne kamp"
+                  onClick={() => toggleMore(m.id)}
+                  style={{ ...S.btn("secondary", false), fontSize: "11px" }}
+                >{moreExpanded ? "▲ Skjul" : "⋯ Mere"}</button>
               </div>
+              {moreExpanded && (
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "10px", paddingTop: "10px", borderTop: `1px solid ${C.border}` }}>
+                  {totalVotes > 0 && (
+                    <button title="Vis/skjul stemmefordelingen for denne kamp" onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
+                  )}
+                  <ConfirmButton label="Slet kun stemmer" title="Sletter kun stemmerne for denne kamp – statistik bevares" style={{ ...S.btn("warn", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_VOTES", matchId: m.id })} />
+                  <ConfirmButton label="Nulstil hele kampen" confirmLabel="Ja, nulstil kampen" title="Sletter stemmer, statistik og resultat for hele kampen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
+                </div>
+              )}
             </div>
             {votesExpanded && <MatchVotesBreakdown state={state} dispatch={dispatch} matchId={m.id} />}
             {isOpen && <AdminVoteBox state={state} dispatch={dispatch} matchId={m.id} />}
@@ -1630,13 +1700,13 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   function deleteEntry(id) { dispatch({ type: "DELETE_LAUNDRY_ENTRY", id }); }
 
   if (!squad.length) {
-    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen spillere fundet endnu. Udfyld Trup-listen, eller registrér mål/assist/kort eller MOTM-stemmer for en kamp – så bygges listen automatisk.</div></div>;
+    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen spillere fundet endnu. Udfyld Trup-listen, eller registrér mål/assist/kort eller stemmer til kampens spiller for en kamp – så bygges listen automatisk.</div></div>;
   }
 
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
-        Trækker tilfældigt en spiller til at tage spilletøjet med hjem til vask. Spillerpuljen bygges automatisk ud fra Trup-listen samt alle, der har mål/assist/kort eller MOTM-stemmer registreret – du behøver altså ikke holde Trup opdateret for at bruge det her. Alle skal have haft en tur, før nogen trækkes igen.
+        Trækker tilfældigt en spiller til at tage spilletøjet med hjem til vask. Spillerpuljen bygges automatisk ud fra Trup-listen samt alle, der har mål/assist/kort eller stemmer til kampens spiller registreret – du behøver altså ikke holde Trup opdateret for at bruge det her. Alle skal have haft en tur, før nogen trækkes igen.
       </div>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "16px" }}>
@@ -1806,7 +1876,7 @@ function BackupTab({ state, dispatch }) {
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Eksport</div>
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
           <button title="Downloader spillerstatistik som CSV-fil til Excel" style={{ ...S.btn("primary", false) }} onClick={exportSeasonCsv}>📊 Sæsonstatistik (CSV)</button>
-          <button title="Downloader kampresultater og MVP-vindere som CSV-fil" style={{ ...S.btn("primary", false) }} onClick={exportMatchesCsv}>📋 Kampresultater (CSV)</button>
+          <button title="Downloader kampresultater og kampens spiller-vindere som CSV-fil" style={{ ...S.btn("primary", false) }} onClick={exportMatchesCsv}>📋 Kampresultater (CSV)</button>
           <button title="Downloader en fuld sikkerhedskopi af alt data" style={{ ...S.btn("secondary", false) }} onClick={exportJson}>💾 Download backup.json</button>
         </div>
         <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>CSV-filer åbnes direkte i Excel, Numbers eller Google Sheets.</div>
@@ -1986,18 +2056,27 @@ export default function App() {
           .motm-numgrid { grid-template-columns: 1fr 1fr !important; }
         }
       `}</style>
-      <div style={{ width: "100%", background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 18px", display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box", flexWrap: "wrap", gap: "8px" }}>
-        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-          <button title="Stem på kampens MVP" style={navBtn("vote")} onClick={() => setView("vote")}>Stem</button>
-          <button title="Se sæsonens samlede point-rangliste" style={navBtn("ranking")} onClick={() => setView("ranking")}>Rangliste</button>
-          <button title="Se fuld sæsonstatistik pr. spiller" style={navBtn("stats")} onClick={() => setView("stats")}>Statistik</button>
-          <button title="Administrer kampe, statistik, trup og mere" style={navBtn("admin")} onClick={() => setView("admin")}>Admin</button>
+      <div style={{ width: "100%", background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+          <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.3px", color: C.text, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {state.teamName || "Kampens Spiller"}
+          </div>
+          {state.competition && <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>{state.competition}</div>}
+        </div>
+        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", alignItems: "center" }}>
+          <button title="Stem på kampens spiller" style={navBtn("vote")} onClick={() => setView("vote")}>Stem</button>
+          <button title="Se sæsonens rangliste og statistik" style={navBtn("ranking")} onClick={() => setView("ranking")}>Rangliste</button>
+          <button
+            title="Administrer kampe, statistik, trup og mere"
+            style={{ ...navBtn("admin"), padding: "7px 10px", fontSize: "11px", fontWeight: 600, color: view === "admin" ? "#4ade80" : C.muted, opacity: view === "admin" ? 1 : 0.75 }}
+            onClick={() => setView("admin")}
+          >Admin</button>
         </div>
       </div>
       <div style={{ width: "100%", maxWidth: "600px", padding: "12px 14px 60px" }}>
-        {view === "vote"    && <VoteView    state={state} dispatch={dispatch} voteError={voteError} />}
+        {view === "vote"    && <VoteView    state={state} dispatch={dispatch} voteError={voteError} onNavigate={setView} />}
         {view === "ranking" && <RankingView state={state} />}
-        {view === "stats"   && <StatsView   state={state} />}
+        {view === "stats"   && <RankingView state={state} />}
         {view === "admin"   && <AdminView   state={state} dispatch={dispatch} statsMatchId={statsMatchId} setStatsMatchId={setStatsMatchId} laundryMatchId={laundryMatchId} setLaundryMatchId={setLaundryMatchId} onSaveError={saveError} />}
       </div>
     </div>
