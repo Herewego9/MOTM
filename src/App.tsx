@@ -120,12 +120,13 @@ const MAX_GOAL_ASSIST_POINTS_PER_MATCH = WEIGHTS.motm - 1;
 function deriveSeasonStats(matchStats) {
   const out = {};
   Object.values(matchStats).forEach(({ players, motmKey, motmName }) => {
+    const countedThisMatch = new Set();
     (players || []).forEach(p => {
       const k = p.name.toLowerCase();
       if (!out[k]) out[k] = { name: p.name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
-      // "Kampe" / matchesPlayed = kampe med registreret statistik-række (mål/assist/kort),
-      // IKKE nødvendigvis alle kampe spilleren har været på banen i.
+      // "Med stats" / matchesPlayed = kampe med registreret statistik (mål/assist/kort ELLER kampens spiller).
       out[k].matchesPlayed += 1;
+      countedThisMatch.add(k);
       out[k].goals       += p.goals || 0;
       out[k].assists     += p.assists || 0;
       out[k].yellowCards += p.yellowCards || 0;
@@ -138,6 +139,8 @@ function deriveSeasonStats(matchStats) {
     });
     if (motmKey) {
       if (!out[motmKey]) out[motmKey] = { name: motmName || motmKey, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
+      // MOTM-only: tæl også kampen i "Med stats" (uden at dobbelt-tælle hvis spilleren allerede har en stats-række).
+      if (!countedThisMatch.has(motmKey)) out[motmKey].matchesPlayed += 1;
       out[motmKey].motmWins += 1;
       out[motmKey].score += WEIGHTS.motm;
     }
@@ -655,7 +658,7 @@ function RankingView({ state }) {
   const barColor = i => i === 0 ? C.gold : i === 1 ? C.blue : i === 2 ? "#d4a574" : C.muted;
 
   const cols = [
-    { label: "Med stats", key: "matchesPlayed", emoji: "⚽", title: "Kampe med registreret statistik (mål, assist eller kort) – ikke nødvendigvis kampe spillet" },
+    { label: "Med stats", key: "matchesPlayed", emoji: "⚽", title: "Kampe med registreret statistik (mål, assist, kort eller kampens spiller) – ikke nødvendigvis kampe spillet" },
     { label: "Mål", key: "goals", emoji: "🥅", title: "Mål" },
     { label: "Assist", key: "assists", emoji: "🎯", title: "Assist" },
     { label: "Gult", key: "yellowCards", emoji: "🟨", title: "Gule kort" },
@@ -729,7 +732,7 @@ function RankingView({ state }) {
         <div style={S.card}>
           <div style={{ fontFamily: F.display, fontSize: "20px", fontWeight: 800, letterSpacing: "0.2px", marginBottom: "4px" }}>{archived ? archived.label : "Sæsonstatistik"}</div>
           <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.55 }}>
-            <strong style={{ color: C.text, fontWeight: 600 }}>Med stats</strong> = kampe, hvor spilleren har fået registreret mål, assist eller kort — ikke hvor mange kampe de har spillet.
+            <strong style={{ color: C.text, fontWeight: 600 }}>Med stats</strong> = kampe, hvor spilleren har fået registreret mål, assist, kort eller kampens spiller — ikke hvor mange kampe de har spillet.
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
