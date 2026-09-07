@@ -266,38 +266,25 @@ function archiveCurrentSeason(state, label) {
 }
 
 // Beregner hvem der stadig mangler at have vasketøjet med i den aktuelle "runde".
-// Går baglæns gennem historikken og samler navne op, indtil enten hele truppen er
-// dækket (en runde er lige afsluttet), eller et navn går igen (vi er passeret
-// grænsen til en tidligere runde). Er alle allerede dækket, starter en ny runde
-// automatisk, og hele truppen er igen med i lodtrækningen.
-// Samler kendte spillernavne fra ALLE steder i appen, ikke kun Trup-listen: kampstatistik
-// (mål/assist/kort) og MOTM-stemmer. Så virker vasketøjs-lodtrækningen selvom Trup aldrig
-// bliver udfyldt – den bruger simpelthen alle, der reelt er registreret et sted i appen.
-function collectKnownPlayers(state) {
-  const names = new Map(); // lowercase → visningsnavn (først fundne stavning bevares)
-  (state.squadNames || []).forEach(n => { if (!names.has(n.toLowerCase())) names.set(n.toLowerCase(), n); });
-  Object.values(state.matchStats || {}).forEach(md => {
-    (md.players || []).forEach(p => { if (!names.has(p.name.toLowerCase())) names.set(p.name.toLowerCase(), p.name); });
-  });
-  Object.values(state.votes || {}).forEach(mv => {
-    Object.values(mv).forEach(entry => { if (!names.has(entry.name.toLowerCase())) names.set(entry.name.toLowerCase(), entry.name); });
-  });
-  return [...names.values()].sort((a, b) => a.localeCompare(b, "da"));
-}
-
+// Puljen er altid Trup-listen (squadNames). Går baglæns gennem historikken og samler
+// navne op (case-insensitivt), indtil enten hele den kvalificerede trup er dækket
+// (en runde er lige afsluttet), eller et navn går igen (vi er passeret grænsen til
+// en tidligere runde). Er alle allerede dækket, starter en ny runde automatisk.
 function computeLaundryPool(squadNames, laundryHistory, excludeName) {
   if (!squadNames || !squadNames.length) return [];
   // Kampens spiller for den valgte kamp må ikke selv kunne trækkes til vasketøj den gang.
   const eligibleSquad = excludeName ? squadNames.filter(n => n.toLowerCase() !== excludeName.toLowerCase()) : squadNames;
   if (!eligibleSquad.length) return [];
   const sorted = [...(laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
-  const recent = new Set();
+  const recent = new Set(); // lowercase-navne i den aktuelle runde
   for (const entry of sorted) {
-    if (recent.has(entry.name)) break; // ramt en tidligere runde – stop her
-    recent.add(entry.name);
+    const key = (entry.name || "").toLowerCase();
+    if (!key) continue;
+    if (recent.has(key)) break; // ramt en tidligere runde – stop her
+    recent.add(key);
     if (recent.size >= eligibleSquad.length) break; // alle kvalificerede er lige dækket
   }
-  const pool = eligibleSquad.filter(n => !recent.has(n));
+  const pool = eligibleSquad.filter(n => !recent.has(n.toLowerCase()));
   return pool.length ? pool : eligibleSquad; // alle (undtagen kampens spiller) har haft en tur → ny runde starter
 }
 
@@ -1662,7 +1649,7 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   // null = auto (første kamp), "" = eksplicit "ingen bestemt kamp"
   const activeMatchId = matchId === null ? (matchesSorted[0]?.id || "") : matchId;
 
-  const squad = collectKnownPlayers(state);
+  const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
   const matchMotmName = activeMatchId ? (state.matchStats[activeMatchId]?.motmName || null) : null;
   const pool = computeLaundryPool(squad, state.laundryHistory, matchMotmName);
   const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
@@ -1689,13 +1676,13 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   function deleteEntry(id) { dispatch({ type: "DELETE_LAUNDRY_ENTRY", id }); }
 
   if (!squad.length) {
-    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Ingen spillere fundet endnu. Udfyld Trup-listen, eller registrér mål/assist/kort eller stemmer til kampens spiller for en kamp – så bygges listen automatisk.</div></div>;
+    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Truppen er tom. Udfyld spillerlisten under Admin → Trup, før du kan trække vasketøjs-ansvarlig.</div></div>;
   }
 
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
-        Trækker tilfældigt en spiller til at tage spilletøjet med hjem til vask. Spillerpuljen bygges automatisk ud fra Trup-listen samt alle, der har mål/assist/kort eller stemmer til kampens spiller registreret – du behøver altså ikke holde Trup opdateret for at bruge det her. Alle skal have haft en tur, før nogen trækkes igen.
+        Trækker tilfældigt en spiller fra truppen til at tage spilletøjet med hjem til vask. Kun spillere der endnu ikke har haft en tur i den aktuelle runde er med i lodtrækningen. Når alle har haft en tur, starter en ny runde automatisk.
       </div>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "16px" }}>
