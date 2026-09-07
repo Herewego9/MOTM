@@ -481,7 +481,6 @@ function VoteView({ state, dispatch, voteError, onNavigate }) {
   const match = state.matches.find(m => m.id === openMatchId);
   const [playerName, setPlayerName] = useState("");
   const [err, setErr] = useState("");
-  const [showSchedule, setShowSchedule] = useState(false);
 
   useEffect(() => { setPlayerName(""); setErr(""); }, [openMatchId]);
 
@@ -602,37 +601,24 @@ function VoteView({ state, dispatch, voteError, onNavigate }) {
         </div>
       )}
 
-      <div style={{ marginTop: "22px" }}>
-        <button
-          type="button"
-          onClick={() => setShowSchedule(s => !s)}
-          style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", padding: 0, fontFamily: F.body, fontSize: "12px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.6px", display: "flex", alignItems: "center", gap: "8px" }}
-        >
-          Kampprogram <span style={{ fontWeight: 500 }}>{showSchedule ? "▲" : "▼"}</span>
-        </button>
-        {showSchedule && (
-          <div style={{ marginTop: "12px" }}>
-            {state.matches.length === 0 ? (
-              <div style={{ color: C.muted, fontSize: "13px", padding: "8px 0" }}>Intet kampprogram endnu. Admin kan hente det under Admin → Kampe.</div>
-            ) : state.matches.map(m => {
-              const isActive = m.id === openMatchId;
-              const done = revealed[m.id];
-              const winner = matchStats[m.id]?.motmName;
-              return (
-                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 0", borderBottom: `1px solid ${C.border}` }}>
-                  <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
-                  <div style={{ flex: 1, fontSize: "13px", fontWeight: isActive ? 700 : 500 }}>
-                    <span style={{ color: C.muted, fontSize: "11px", marginRight: "6px" }}>{isHome(m, state.teamName) ? "Hjemme" : "Ude"}</span>
-                    {opponent(m, state.teamName)}
-                  </div>
-                  <div style={{ fontSize: "11px", color: done ? C.gold : isActive ? "#4ade80" : C.muted, fontWeight: isActive || done ? 700 : 400, textAlign: "right", maxWidth: "130px" }}>
-                    {done ? (winner || "Afsluttet") : isActive ? "Åben" : m.time}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+      <div style={S.card}>
+        <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>Kampprogram</div>
+        {state.matches.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "16px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Admin kan hente det under Admin → Kampe.</div>
+        ) : state.matches.map(m => {
+          const isActive = m.id === openMatchId;
+          const done = revealed[m.id];
+          const motm = matchStats[m.id]?.motmName;
+          return (
+            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 11px", borderRadius: "7px", marginBottom: "5px", background: isActive ? "rgba(34,197,94,0.08)" : "transparent", border: isActive ? "1px solid rgba(74,222,128,0.25)" : `1px solid ${C.border}` }}>
+              <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
+              <div style={{ flex: 1, fontSize: "13px", fontWeight: 500 }}>{isHome(m, state.teamName) ? "🏠 " : "✈️ "}{opponent(m, state.teamName)}</div>
+              <div style={{ fontSize: "11px", color: done ? C.gold : isActive ? "#4ade80" : C.muted, fontWeight: isActive || done ? 700 : 400, textAlign: "right", maxWidth: "120px" }}>
+                {done ? (motm ? `⭐ ${motm}` : "✓") : isActive ? "● Åben" : m.time}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
