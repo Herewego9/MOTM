@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "migrate:kv:dry": "node scripts/migrate-kv-to-relational.mjs --dry-run",
+    "migrate:kv:apply": "node scripts/migrate-kv-to-relational.mjs --apply"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.1",

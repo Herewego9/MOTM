@@ -216,11 +216,27 @@ async function saveSharedViaApi(shared) {
   }
   return data.updated_at || new Date().toISOString();
 }
+function getVoterKey() {
+  // Stabil enhedsnøgle til atomare stemmer (fase 1, før rigtig Auth).
+  try {
+    const existing = localStorage.getItem("motm-voter-key");
+    if (existing) return existing;
+    const created =
+      (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `v-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    localStorage.setItem("motm-voter-key", created);
+    return created;
+  } catch {
+    return `anon-${Date.now()}`;
+  }
+}
+
 async function submitVoteViaApi(matchId, player) {
   const res = await fetch("/api/vote", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ matchId, player }),
+    body: JSON.stringify({ matchId, player, voterKey: getVoterKey() }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Kunne ikke gemme stemme.");
