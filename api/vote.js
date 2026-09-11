@@ -1,8 +1,11 @@
+import crypto from "crypto";
 import { loadShared, saveShared } from "./_lib/sharedStore.js";
+import { isRelationalBackend } from "./_lib/dataBackend.js";
+import { castRelationalVote } from "./_lib/relationalStore.js";
 
 function applyVote(shared, matchId, playerName) {
   const key = playerName.toLowerCase();
-  const matchVotes = shared.votes?.[matchId] || {};
+  const matchVotes = { ...(shared.votes?.[matchId] || {}) };
   if (matchVotes[key]) {
     matchVotes[key] = { ...matchVotes[key], count: matchVotes[key].count + 1 };
   } else {
@@ -10,7 +13,6 @@ function applyVote(shared, matchId, playerName) {
   }
   const votes = { ...(shared.votes || {}), [matchId]: matchVotes };
 
-  // Hold MOTM-preview opdateret mens afstemningen er åben (samme logik som klient-reduceren).
   const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
   const prevMatchData = shared.matchStats?.[matchId] || { players: [] };
   const matchStats = {
@@ -32,6 +34,7 @@ export default async function handler(req, res) {
 
   const matchId = req.body?.matchId;
   const player = typeof req.body?.player === "string" ? req.body.player.trim() : "";
+  const voterKeyRaw = typeof req.body?.voterKey === "string" ? req.body.voterKey.trim() : "";
   if (matchId == null || matchId === "" || !player) {
     return res.status(400).json({ error: "Angiv matchId og spillernavn." });
   }
@@ -40,6 +43,24 @@ export default async function handler(req, res) {
   }
 
   try {
+    if (isRelationalBackend()) {
+      const voterKey = voterKeyRaw || `anon:${crypto.randomUUID()}`;
+      const result = await castRelationalVote({ matchId, player, voterKey });
+      if (result.alreadyVoted) {
+        return res.status(409).json({
+          error: "Du har allerede stemt i denne kamp.",
+          shared: result.shared,
+          updated_at: result.updated_at,
+          backend: "relational",
+        });
+      }
+      return res.status(200).json({
+        shared: result.shared,
+        updated_at: result.updated_at,
+        backend: "relational",
+      });
+    }
+
     const { shared } = await loadShared();
     if (shared.openMatchId == null || String(shared.openMatchId) !== String(matchId)) {
       return res.status(409).json({ error: "Afstemningen er ikke åben for denne kamp." });
@@ -50,7 +71,7 @@ export default async function handler(req, res) {
 
     const next = applyVote(shared, matchId, player);
     const updated_at = await saveShared(next);
-    return res.status(200).json({ shared: next, updated_at });
+    return res.status(200).json({ shared: next, updated_at, backend: "blob" });
   } catch (e) {
     console.error("vote error:", e);
     const msg = e?.message || "Kunne ikke gemme stemme.";

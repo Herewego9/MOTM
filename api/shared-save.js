@@ -1,5 +1,7 @@
 import { requireAdmin, sendUnauthorized } from "./_lib/auth.js";
 import { sanitizeShared, saveShared } from "./_lib/sharedStore.js";
+import { isRelationalBackend } from "./_lib/dataBackend.js";
+import { syncRelationalFromShared } from "./_lib/relationalStore.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -14,10 +16,22 @@ export default async function handler(req, res) {
 
   try {
     const cleaned = sanitizeShared(shared);
+
+    if (isRelationalBackend()) {
+      const result = await syncRelationalFromShared(cleaned);
+      return res.status(200).json({
+        updated_at: result.updated_at,
+        shared: result.shared,
+        backend: "relational",
+      });
+    }
+
     const updated_at = await saveShared(cleaned);
-    return res.status(200).json({ updated_at, shared: cleaned });
+    return res.status(200).json({ updated_at, shared: cleaned, backend: "blob" });
   } catch (e) {
     console.error("shared-save error:", e);
-    return res.status(e.statusCode || 500).json({ error: e.message || "Kunne ikke gemme data." });
+    return res.status(e.statusCode || 500).json({
+      error: e.message || "Kunne ikke gemme data.",
+    });
   }
 }
