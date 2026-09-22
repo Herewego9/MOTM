@@ -12,3 +12,9 @@ npm run dev
 ```
 
 Åbn http://localhost:5174 — appen vises i en iPhone-ramme på desktop.
+
+### Kampprogram
+Brug fanen **Kampe** til at tilføje kampe manuelt (eller “Udfyld eksempel”).
+Åbn afstemning dér — fanen **Stem** følger med.
+Data gemmes i browserens `localStorage` (ikke Supabase).
+

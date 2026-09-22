@@ -1,9 +1,42 @@
 import { useState } from "react";
-import { CLUB, OPEN_MATCH, RECENT_MATCH, SQUAD } from "../data";
+import { CLUB, SQUAD } from "../data";
+import { useStore } from "../store";
 
 export function StemScreen() {
+  const { openMatch, recentRevealed } = useStore();
   const [selected, setSelected] = useState<string | null>(null);
   const [votedFor, setVotedFor] = useState<string | null>(null);
+
+  if (!openMatch && !votedFor) {
+    return (
+      <div className="screen" key="empty">
+        <p className="eyebrow">{CLUB.competition}</p>
+        <div className="brand-row">
+          <h1 className="brand">MOTM</h1>
+          <span className="badge closed">Ingen åben</span>
+        </div>
+        <p className="lede">Der er ingen afstemning lige nu.</p>
+        <div className="panel">
+          <h3>Mangler kampprogram?</h3>
+          <p>
+            Holdlederen tilføjer kampe under fanen <strong>Kampe</strong> — eller åbner afstemning på en
+            eksisterende kamp.
+          </p>
+        </div>
+        {recentRevealed ? (
+          <div className="panel" style={{ marginTop: 10 }}>
+            <h3>Sidste MOTM</h3>
+            <p>
+              {recentRevealed.home} – {recentRevealed.away}
+            </p>
+            <p style={{ marginTop: 6, color: "var(--gold)", fontWeight: 700 }}>
+              {recentRevealed.motmName}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   if (votedFor) {
     return (
@@ -21,22 +54,26 @@ export function StemScreen() {
           <p>Afstemningen er åben for resten af holdet. Resultatet afsløres, når admin lukker.</p>
           <div className="picked">{votedFor}</div>
         </div>
-        <div className="panel" style={{ marginTop: 8 }}>
-          <h3>Sidste kamp</h3>
-          <p>
-            {RECENT_MATCH.home} – {RECENT_MATCH.away}
-          </p>
-          <p style={{ marginTop: 6, color: "var(--gold)", fontWeight: 700 }}>
-            MOTM: {RECENT_MATCH.motmName}
-          </p>
-        </div>
+        {recentRevealed ? (
+          <div className="panel" style={{ marginTop: 8 }}>
+            <h3>Sidste kamp</h3>
+            <p>
+              {recentRevealed.home} – {recentRevealed.away}
+            </p>
+            <p style={{ marginTop: 6, color: "var(--gold)", fontWeight: 700 }}>
+              MOTM: {recentRevealed.motmName}
+            </p>
+          </div>
+        ) : null}
       </div>
     );
   }
 
+  const match = openMatch!;
+
   return (
     <div className="screen" key="vote">
-      <p className="eyebrow">{CLUB.competition}</p>
+      <p className="eyebrow">{match.competition}</p>
       <div className="brand-row">
         <h1 className="brand">MOTM</h1>
         <span className="badge open">
@@ -47,13 +84,13 @@ export function StemScreen() {
       <p className="lede">Vælg kampens spiller. Ét tryk — én stemme.</p>
 
       <div className="match-hero">
-        <div className="match-meta">{OPEN_MATCH.competition}</div>
+        <div className="match-meta">{match.competition}</div>
         <div className="match-scoreline">
-          <div className="team">{OPEN_MATCH.home}</div>
+          <div className="team">{match.home}</div>
           <div className="vs">VS</div>
-          <div className="team right">{OPEN_MATCH.away}</div>
+          <div className="team right">{match.away}</div>
         </div>
-        <div className="match-meta">{OPEN_MATCH.kickoff} · Stem inden omklædningen lukker</div>
+        <div className="match-meta">{match.kickoff} · Stem inden omklædningen lukker</div>
       </div>
 
       <h2 className="section-title">Truppen</h2>

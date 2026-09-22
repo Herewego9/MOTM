@@ -65,8 +65,8 @@ export function ProfilScreen() {
       <div className="panel">
         <h3>Preview-mode</h3>
         <p>
-          Dette er en lokal telefon-prototype med mock-data. Den rører ikke den live MOTM-webapp eller
-          databasen.
+          Lokal telefon-prototype. Kampprogram tilføjes under fanen <strong>Kampe</strong> (gemmes i
+          denne browser). Den rører ikke den live MOTM-webapp.
         </p>
       </div>
     </div>

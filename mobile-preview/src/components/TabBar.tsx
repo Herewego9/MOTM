@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-type TabId = "stem" | "rangliste" | "hold" | "profil";
+type TabId = "stem" | "rangliste" | "hold" | "kampe" | "profil";
 
 const icons: Record<TabId, ReactNode> = {
   stem: (
@@ -21,6 +21,12 @@ const icons: Record<TabId, ReactNode> = {
       <path d="M14 19c.7-1.6 2-2.8 3.5-2.8 1.2 0 2.2.5 3 1.5" />
     </svg>
   ),
+  kampe: (
+    <svg viewBox="0 0 24 24" aria-hidden>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18M8 5V3M16 5V3" />
+    </svg>
+  ),
   profil: (
     <svg viewBox="0 0 24 24" aria-hidden>
       <circle cx="12" cy="8" r="3.5" />
@@ -33,6 +39,7 @@ const labels: Record<TabId, string> = {
   stem: "Stem",
   rangliste: "Rangliste",
   hold: "Hold",
+  kampe: "Kampe",
   profil: "Profil",
 };
 
@@ -43,7 +50,7 @@ export function TabBar({
   active: TabId;
   onChange: (id: TabId) => void;
 }) {
-  const tabs: TabId[] = ["stem", "rangliste", "hold", "profil"];
+  const tabs: TabId[] = ["stem", "rangliste", "hold", "kampe", "profil"];
   return (
     <nav className="tabbar" aria-label="Hovedmenu">
       {tabs.map((id) => (
