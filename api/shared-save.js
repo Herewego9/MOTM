@@ -1,5 +1,6 @@
 import { requireAdmin, sendUnauthorized } from "./_lib/auth.js";
 import { sanitizeShared, saveShared } from "./_lib/sharedStore.js";
+import { toClientError } from "./_lib/errors.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -18,6 +19,8 @@ export default async function handler(req, res) {
     return res.status(200).json({ updated_at, shared: cleaned });
   } catch (e) {
     console.error("shared-save error:", e);
-    return res.status(e.statusCode || 500).json({ error: e.message || "Kunne ikke gemme data." });
+    return res.status(e.statusCode || 500).json({
+      error: toClientError(e, "Kunne ikke gemme data."),
+    });
   }
 }

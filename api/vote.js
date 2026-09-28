@@ -1,4 +1,5 @@
 import { loadShared, saveShared } from "./_lib/sharedStore.js";
+import { toClientError } from "./_lib/errors.js";
 
 function applyVote(shared, matchId, playerName) {
   const key = playerName.toLowerCase();
@@ -53,10 +54,8 @@ export default async function handler(req, res) {
     return res.status(200).json({ shared: next, updated_at });
   } catch (e) {
     console.error("vote error:", e);
-    const msg = e?.message || "Kunne ikke gemme stemme.";
-    const hint = /permission denied/i.test(msg)
-      ? " Tjek at SUPABASE_SERVICE_ROLE_KEY matcher projektet, og kør GRANT ALL ON public.kv_store TO service_role; i Supabase SQL."
-      : "";
-    return res.status(e.statusCode || 500).json({ error: msg + hint });
+    return res.status(e.statusCode || 500).json({
+      error: toClientError(e, "Kunne ikke gemme stemme."),
+    });
   }
 }

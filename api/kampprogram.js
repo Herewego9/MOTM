@@ -5,6 +5,7 @@
 
 import * as cheerio from "cheerio";
 import { requireAdmin, sendUnauthorized } from "./_lib/auth.js";
+import { toClientError } from "./_lib/errors.js";
 
 function toDanishDateTime(isoWithOffset) {
   const dt = new Date(isoWithOffset);
@@ -114,6 +115,15 @@ export default async function handler(req, res) {
     const data = await fetchScrape(url);
     return res.status(200).json(data);
   } catch (e) {
-    return res.status(e.statusCode || 500).json({ error: e.message || "Ukendt fejl ved hentning af kampprogram." });
+    // DBU-fetch kan også give "fetch failed" – gør det tydeligt at det er DBU, ikke jeres database.
+    const raw = e?.message || "";
+    if (/fetch failed|failed to fetch/i.test(raw) && !e.statusCode) {
+      return res.status(502).json({
+        error: "Kunne ikke nå DBU (netværksfejl). Prøv igen om lidt, eller tjek API-nøgle/link.",
+      });
+    }
+    return res.status(e.statusCode || 500).json({
+      error: e.statusCode ? (e.message || "Ukendt fejl ved hentning af kampprogram.") : toClientError(e, "Ukendt fejl ved hentning af kampprogram."),
+    });
   }
 }

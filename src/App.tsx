@@ -191,39 +191,76 @@ function fmtDate(iso) { return new Date(iso).toLocaleDateString("da-DK", { weekd
 function isHome(m, teamName) { return !!teamName && m.home === teamName; }
 function opponent(m, teamName) { return isHome(m, teamName) ? m.away : m.home; }
 
+/** Gør rå netværks-/Supabase-fejl læsbare for admin (ikke bare "TypeError: fetch failed"). */
+function friendlyClientError(err, fallback = "Der opstod en fejl.") {
+  const raw = err?.message || (typeof err === "string" ? err : "") || "";
+  const text = raw.toLowerCase();
+  if (/typeerror:\s*fetch failed|fetch failed|failed to fetch|networkerror|load failed/.test(text)) {
+    return (
+      "Kan ikke nå databasen (Supabase). " +
+      "Tjek at projektet stadig findes, og at VITE_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY er sat korrekt i Vercel. " +
+      "Statistikken er ikke nødvendigvis slettet — appen kan bare ikke hente eller gemme den lige nu."
+    );
+  }
+  return raw || fallback;
+}
+
 // ---- Storage: læs via anon (RLS), skriv via server-API (service role) ----
+// Returnerer { ok, shared, error }. Ved fejl returneres IKKE tom INIT_SHARED som om data var slettet.
 async function loadSharedFromSupabase() {
-  if (!supabase) return { ...INIT_SHARED };
+  if (!supabase) {
+    return { ok: false, shared: null, error: "Supabase-klient mangler (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)." };
+  }
   try {
     const { data, error } = await supabase.from("kv_store").select("value, updated_at").eq("key", SHARED_KEY).maybeSingle();
     if (error) throw error;
-    if (data && data.value) return { ...INIT_SHARED, ...stripSecrets(data.value), _lastUpdated: data.updated_at || null };
-  } catch (e) { console.error("Kunne ikke hente delt data:", e); }
-  return { ...INIT_SHARED };
+    if (data && data.value) {
+      return {
+        ok: true,
+        shared: { ...INIT_SHARED, ...stripSecrets(data.value), _lastUpdated: data.updated_at || null },
+        error: null,
+      };
+    }
+    // Tom database er en gyldig tilstand (første opstart) — ikke en forbindelsesfejl.
+    return { ok: true, shared: { ...INIT_SHARED }, error: null };
+  } catch (e) {
+    console.error("Kunne ikke hente delt data:", e);
+    return { ok: false, shared: null, error: friendlyClientError(e, "Kunne ikke hente data fra databasen.") };
+  }
 }
 async function saveSharedViaApi(shared) {
   const token = getAdminToken();
   if (!token) throw new Error("Admin-session mangler. Log ind igen.");
-  const res = await fetch("/api/shared-save", {
-    method: "POST",
-    headers: adminHeaders(),
-    body: JSON.stringify({ shared: stripSecrets(shared) }),
-  });
+  let res;
+  try {
+    res = await fetch("/api/shared-save", {
+      method: "POST",
+      headers: adminHeaders(),
+      body: JSON.stringify({ shared: stripSecrets(shared) }),
+    });
+  } catch (e) {
+    throw new Error(friendlyClientError(e, "Kunne ikke gemme data."));
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401) setAdminToken("");
-    throw new Error(data.error || "Kunne ikke gemme data.");
+    throw new Error(friendlyClientError({ message: data.error }, data.error || "Kunne ikke gemme data."));
   }
   return data.updated_at || new Date().toISOString();
 }
 async function submitVoteViaApi(matchId, player) {
-  const res = await fetch("/api/vote", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ matchId, player }),
-  });
+  let res;
+  try {
+    res = await fetch("/api/vote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ matchId, player }),
+    });
+  } catch (e) {
+    throw new Error(friendlyClientError(e, "Kunne ikke gemme stemme."));
+  }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Kunne ikke gemme stemme.");
+  if (!res.ok) throw new Error(friendlyClientError({ message: data.error }, data.error || "Kunne ikke gemme stemme."));
   return data;
 }
 
@@ -1912,8 +1949,10 @@ export default function App() {
   const [state, setStateRaw] = useState(() => ({ ...INIT_SHARED, ...loadPersonal() }));
   const [ready, setReady] = useState(false);
   const [connError, setConnError] = useState(false);
+  const [dataLoadError, setDataLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [voteError, setVoteError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
   // Holdes her (ikke inde i StatsTab/LaundryTab), så det IKKE nulstilles ved faneskift.
   const [statsMatchId, setStatsMatchId] = useState(null);
   const [laundryMatchId, setLaundryMatchId] = useState(null); // null = auto første kamp; "" = ingen bestemt kamp
@@ -1921,10 +1960,17 @@ export default function App() {
   // Hent delt data ved opstart + lyt til ændringer fra andre enheder (live).
   useEffect(() => {
     let active = true;
+    setReady(false);
     (async () => {
-      const shared = await loadSharedFromSupabase();
+      const result = await loadSharedFromSupabase();
       if (!active) return;
-      setStateRaw(prev => ({ ...prev, ...shared }));
+      if (!result.ok) {
+        setDataLoadError(result.error || "Kunne ikke hente data.");
+        setReady(true);
+        return;
+      }
+      setDataLoadError("");
+      setStateRaw(prev => ({ ...prev, ...result.shared }));
       setReady(true);
     })();
 
@@ -1934,6 +1980,7 @@ export default function App() {
       .channel("st70-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "kv_store", filter: `key=eq.${SHARED_KEY}` }, (payload) => {
         if (payload.new && payload.new.value) {
+          setDataLoadError("");
           setStateRaw(prev => ({ ...prev, ...stripSecrets(payload.new.value), _lastUpdated: payload.new.updated_at || prev._lastUpdated }));
         }
       })
@@ -1942,11 +1989,21 @@ export default function App() {
       });
 
     return () => { active = false; supabase.removeChannel(channel); };
-  }, []);
+  }, [reloadToken]);
 
   function dispatch(action) {
     setSaveError("");
     setVoteError("");
+
+    // Undgå at overskrive ægte data i databasen med en tom "fejl-tilstand",
+    // hvis den første indlæsning fejlede (fx slettet/pauset Supabase-projekt).
+    if (dataLoadError) {
+      setSaveError(
+        "Kan ikke gemme: forbindelsen til databasen fejlede ved indlæsning. " +
+        "Genindlæs når Supabase er oppe igen — ellers risikerer du at overskrive statistikken med tomt data."
+      );
+      return;
+    }
 
     // Offentlige stemmer går via /api/vote (service role) – klienten må ikke skrive direkte.
     if (action.type === "VOTE") {
@@ -1967,13 +2024,14 @@ export default function App() {
           })
           .catch(async err => {
             console.error(err);
-            setVoteError(err.message || "Stemme kunne ikke gemmes.");
-            const shared = await loadSharedFromSupabase();
+            setVoteError(friendlyClientError(err, "Stemme kunne ikke gemmes."));
+            const result = await loadSharedFromSupabase();
             setStateRaw(cur => {
               const votedMatches = { ...(cur.votedMatches || {}) };
               delete votedMatches[action.matchId];
               savePersonal({ votedMatches });
-              return { ...cur, ...shared, votedMatches };
+              if (!result.ok) return { ...cur, votedMatches };
+              return { ...cur, ...result.shared, votedMatches };
             });
           });
         return next;
@@ -1982,7 +2040,10 @@ export default function App() {
     }
 
     // Alle øvrige mutationer kræver admin-session og gemmes via /api/shared-save.
+    // Gem et snapshot før ændringen, så vi kan rulle tilbage hvis gem fejler —
+    // ellers tror man statistikken er opdateret lokalt, mens databasen stadig har det gamle.
     setStateRaw(prev => {
+      const previous = prev;
       const next = reducer(prev, action);
       const { votedMatches, _lastUpdated, ...shared } = next;
       savePersonal({ votedMatches });
@@ -1992,7 +2053,11 @@ export default function App() {
         })
         .catch(err => {
           console.error(err);
-          setSaveError(err.message || "Kunne ikke gemme ændringen.");
+          setSaveError(friendlyClientError(err, "Kunne ikke gemme ændringen."));
+          setStateRaw(cur => ({
+            ...previous,
+            votedMatches: cur.votedMatches,
+          }));
         });
       return next;
     });
@@ -2009,6 +2074,27 @@ export default function App() {
       <div style={{ minHeight: "100vh", background: C.bg, color: C.muted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.body, fontSize: "14px", flexDirection: "column", gap: "10px" }}>
         <div>Forbinder til serveren…</div>
         {connError && <div style={{ color: "#f87171", fontSize: "12px", maxWidth: "320px", textAlign: "center" }}>Kunne ikke forbinde til Supabase. Tjek at VITE_SUPABASE_URL og VITE_SUPABASE_ANON_KEY er sat korrekt under Vercel → Settings → Environment Variables.</div>}
+      </div>
+    );
+  }
+
+  if (dataLoadError) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.body, padding: "24px" }}>
+        <div style={{ maxWidth: "480px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "28px" }}>
+          <div style={{ fontFamily: F.display, fontSize: "26px", fontWeight: 800, marginBottom: "10px" }}>Kan ikke hente data</div>
+          <div style={{ ...S.err, marginBottom: "14px" }}>{dataLoadError}</div>
+          <div style={{ fontSize: "13px", color: C.muted, lineHeight: 1.65, marginBottom: "16px" }}>
+            Appen viser <strong style={{ color: C.text }}>ikke</strong> tom statistik med vilje — den kunne ikke nå Supabase.
+            Hvis I har en tidligere <code style={{ color: C.gold }}>backup.json</code>, kan I gendanne den under Admin → Backup, når forbindelsen virker igen.
+          </div>
+          <button
+            style={S.btn("primary")}
+            onClick={() => { setDataLoadError(""); setReady(false); setReloadToken(t => t + 1); }}
+          >
+            Prøv igen
+          </button>
+        </div>
       </div>
     );
   }
