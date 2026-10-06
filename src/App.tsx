@@ -346,10 +346,6 @@ function computeLaundryRound(squadNames, laundryHistory, excludeName) {
   };
 }
 
-function computeLaundryPool(squadNames, laundryHistory, excludeName) {
-  return computeLaundryRound(squadNames, laundryHistory, excludeName).pool;
-}
-
 // ============================================================
 // REDUCER
 // ============================================================
