@@ -307,22 +307,43 @@ function archiveCurrentSeason(state, label) {
 // navne op (case-insensitivt), indtil enten hele den kvalificerede trup er dækket
 // (en runde er lige afsluttet), eller et navn går igen (vi er passeret grænsen til
 // en tidligere runde). Er alle allerede dækket, starter en ny runde automatisk.
-function computeLaundryPool(squadNames, laundryHistory, excludeName) {
-  if (!squadNames || !squadNames.length) return [];
+//
+// Spillere der ikke længere er i truppen ignoreres i rundetællingen, så gamle
+// registreringer ikke "forurener" den aktuelle runde.
+function computeLaundryRound(squadNames, laundryHistory, excludeName) {
+  if (!squadNames || !squadNames.length) {
+    return { pool: [], doneThisRound: [], eligibleSquad: [] };
+  }
+  const squadSet = new Set(squadNames.map(n => n.toLowerCase()));
   // Kampens spiller for den valgte kamp må ikke selv kunne trækkes til vasketøj den gang.
-  const eligibleSquad = excludeName ? squadNames.filter(n => n.toLowerCase() !== excludeName.toLowerCase()) : squadNames;
-  if (!eligibleSquad.length) return [];
+  const eligibleSquad = excludeName
+    ? squadNames.filter(n => n.toLowerCase() !== excludeName.toLowerCase())
+    : [...squadNames];
+  if (!eligibleSquad.length) {
+    return { pool: [], doneThisRound: [], eligibleSquad: [] };
+  }
+
   const sorted = [...(laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
-  const recent = new Set(); // lowercase-navne i den aktuelle runde
+  const recent = new Set(); // lowercase-navne i den aktuelle runde (kun nuværende trup)
   for (const entry of sorted) {
     const key = (entry.name || "").toLowerCase();
-    if (!key) continue;
+    if (!key || !squadSet.has(key)) continue; // sprunget/udgået spiller tæller ikke
     if (recent.has(key)) break; // ramt en tidligere runde – stop her
     recent.add(key);
-    if (recent.size >= eligibleSquad.length) break; // alle kvalificerede er lige dækket
+    // Runden er færdig, når alle *kvalificerede* (uden kampens spiller) har haft en tur.
+    if (eligibleSquad.every(n => recent.has(n.toLowerCase()))) break;
   }
-  const pool = eligibleSquad.filter(n => !recent.has(n.toLowerCase()));
-  return pool.length ? pool : eligibleSquad; // alle (undtagen kampens spiller) har haft en tur → ny runde starter
+
+  const doneThisRound = eligibleSquad.filter(n => recent.has(n.toLowerCase()));
+  const remaining = eligibleSquad.filter(n => !recent.has(n.toLowerCase()));
+  // Alle kvalificerede har haft en tur → ny runde starter automatisk.
+  const pool = remaining.length ? remaining : [...eligibleSquad];
+  return {
+    pool,
+    doneThisRound: remaining.length ? doneThisRound : [],
+    eligibleSquad,
+    newRound: remaining.length === 0,
+  };
 }
 
 // ============================================================
@@ -486,6 +507,20 @@ function reducer(state, action) {
       return { ...state, seasonHistory: (state.seasonHistory || []).filter(s => String(s.id) !== String(action.id)) };
     case "ASSIGN_LAUNDRY":
       return { ...state, laundryHistory: [...(state.laundryHistory || []), { id: Date.now(), name: action.name, date: new Date().toISOString(), matchId: action.matchId || null, matchLabel: action.matchLabel || null }] };
+    case "UPDATE_LAUNDRY_ENTRY": {
+      const { id, name, matchId, matchLabel } = action;
+      return {
+        ...state,
+        laundryHistory: (state.laundryHistory || []).map(e => {
+          if (String(e.id) !== String(id)) return e;
+          return {
+            ...e,
+            ...(name != null ? { name } : {}),
+            ...(matchId !== undefined ? { matchId: matchId || null, matchLabel: matchLabel || null } : {}),
+          };
+        }),
+      };
+    }
     case "DELETE_LAUNDRY_ENTRY":
       return { ...state, laundryHistory: (state.laundryHistory || []).filter(e => String(e.id) !== String(action.id)) };
     case "IMPORT_STATE":
@@ -1681,77 +1716,208 @@ function MatchVotesBreakdown({ state, dispatch, matchId }) {
 // ---- VASKETØJ TAB ----
 function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   const [candidate, setCandidate] = useState(null);
+  const [confirmingAssign, setConfirmingAssign] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [manualName, setManualName] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editMatchId, setEditMatchId] = useState("");
+
   const matchesSorted = [...(state.matches || [])].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-  // null = auto (første kamp), "" = eksplicit "ingen bestemt kamp"
-  const activeMatchId = matchId === null ? (matchesSorted[0]?.id || "") : matchId;
+  // Smart auto-valg: seneste kamp uden vasketøjs-registrering (ellers seneste kamp).
+  const defaultMatchId = (() => {
+    if (!matchesSorted.length) return "";
+    const assigned = new Set(
+      (state.laundryHistory || [])
+        .filter(e => e.matchId != null && e.matchId !== "")
+        .map(e => String(e.matchId))
+    );
+    const withoutLaundry = [...matchesSorted].reverse().find(m => !assigned.has(String(m.id)));
+    return String((withoutLaundry || matchesSorted[matchesSorted.length - 1]).id);
+  })();
+  // null = auto, "" = eksplicit "ingen bestemt kamp"
+  const activeMatchId = matchId === null ? defaultMatchId : matchId;
 
   const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
   const matchMotmName = activeMatchId ? (state.matchStats[activeMatchId]?.motmName || null) : null;
-  const pool = computeLaundryPool(squad, state.laundryHistory, matchMotmName);
+  const round = computeLaundryRound(squad, state.laundryHistory, matchMotmName);
+  const { pool, doneThisRound, newRound } = round;
   const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
 
   function matchLabelFor(id) {
-    const m = state.matches.find(x => x.id === +id);
+    if (id == null || id === "") return null;
+    const m = state.matches.find(x => String(x.id) === String(id));
     return m ? `${fmtDate(m.date)} – ${opponent(m, state.teamName)}` : null;
   }
 
   function rollRandom() {
     setMsg(null);
+    setConfirmingAssign(false);
     if (!pool.length) return;
-    const pick = pool[Math.floor(Math.random() * pool.length)];
+    // Undgå at trække samme navn igen, hvis puljen har flere valg.
+    let pick = pool[Math.floor(Math.random() * pool.length)];
+    if (pool.length > 1 && candidate && pick === candidate) {
+      const others = pool.filter(n => n !== candidate);
+      pick = others[Math.floor(Math.random() * others.length)];
+    }
     setCandidate(pick);
   }
 
   function confirmAssign() {
     if (!candidate) return;
-    dispatch({ type: "ASSIGN_LAUNDRY", name: candidate, matchId: activeMatchId || null, matchLabel: activeMatchId ? matchLabelFor(activeMatchId) : null });
+    dispatch({
+      type: "ASSIGN_LAUNDRY",
+      name: candidate,
+      matchId: activeMatchId || null,
+      matchLabel: activeMatchId ? matchLabelFor(activeMatchId) : null,
+    });
     setMsg({ type: "ok", text: `${candidate} er registreret som denne omgangs vasketøjs-ansvarlig.` });
     setCandidate(null);
+    setConfirmingAssign(false);
   }
 
-  function deleteEntry(id) { dispatch({ type: "DELETE_LAUNDRY_ENTRY", id }); }
+  function assignManual() {
+    const name = manualName.trim();
+    if (!name) return;
+    dispatch({
+      type: "ASSIGN_LAUNDRY",
+      name,
+      matchId: activeMatchId || null,
+      matchLabel: activeMatchId ? matchLabelFor(activeMatchId) : null,
+    });
+    setMsg({ type: "ok", text: `${name} er registreret manuelt.` });
+    setManualName("");
+    setCandidate(null);
+    setConfirmingAssign(false);
+  }
+
+  function startEdit(entry) {
+    setEditingId(entry.id);
+    setEditName(entry.name || "");
+    setEditMatchId(entry.matchId != null && entry.matchId !== "" ? String(entry.matchId) : "");
+    setMsg(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditName("");
+    setEditMatchId("");
+  }
+
+  function saveEdit() {
+    if (editingId == null) return;
+    const name = editName.trim();
+    if (!name) {
+      setMsg({ type: "err", text: "Vælg et spillernavn." });
+      return;
+    }
+    dispatch({
+      type: "UPDATE_LAUNDRY_ENTRY",
+      id: editingId,
+      name,
+      matchId: editMatchId || null,
+      matchLabel: editMatchId ? matchLabelFor(editMatchId) : null,
+    });
+    setMsg({ type: "ok", text: "Registrering opdateret." });
+    cancelEdit();
+  }
+
+  function deleteEntry(id) {
+    dispatch({ type: "DELETE_LAUNDRY_ENTRY", id });
+    if (String(editingId) === String(id)) cancelEdit();
+  }
 
   if (!squad.length) {
     return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Truppen er tom. Udfyld spillerlisten under Admin → Trup, før du kan trække vasketøjs-ansvarlig.</div></div>;
   }
 
+  const remainingCount = pool.length;
+  const doneCount = doneThisRound.length;
+
   return (
     <div>
       <div style={{ fontSize: "12px", color: C.muted, marginBottom: "14px", lineHeight: 1.6 }}>
-        Trækker tilfældigt en spiller fra truppen til at tage spilletøjet med hjem til vask. Kun spillere der endnu ikke har haft en tur i den aktuelle runde er med i lodtrækningen. Når alle har haft en tur, starter en ny runde automatisk.
+        Trækker tilfældigt blandt spillere der endnu ikke har haft en tur i den aktuelle runde.
+        Når alle har haft en tur, starter en ny runde automatisk. Trykker du forkert, kan du rette eller slette i historikken nedenfor.
       </div>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "16px" }}>
-        <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>
-          {pool.length} af {squad.length} er stadig med i denne runde
+        <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>
+          {newRound
+            ? `Ny runde klar · ${remainingCount} spillere i puljen`
+            : `${remainingCount} tilbage · ${doneCount} har allerede haft tur denne runde`}
         </div>
-        {matchMotmName && <div style={{ fontSize: "11px", color: C.gold, marginBottom: "10px", marginTop: "-6px" }}>⭐ {matchMotmName} er kampens spiller og er fritaget for vasketøj denne gang</div>}
+        {matchMotmName && (
+          <div style={{ fontSize: "11px", color: C.gold, marginBottom: "10px" }}>
+            ⭐ {matchMotmName} er kampens spiller og er fritaget for vasketøj denne gang
+          </div>
+        )}
+        {!newRound && doneThisRound.length > 0 && (
+          <div style={{ fontSize: "11px", color: C.muted, marginBottom: "12px", lineHeight: 1.5 }}>
+            Har haft tur: {doneThisRound.join(", ")}
+          </div>
+        )}
 
         {matchesSorted.length > 0 && (
           <>
             <label style={S.label}>Kamp (valgfrit, men anbefalet)</label>
-            <select style={S.input} value={activeMatchId} onChange={e => setMatchId(e.target.value)}>
+            <select
+              style={S.input}
+              value={activeMatchId}
+              onChange={e => { setMatchId(e.target.value); setConfirmingAssign(false); }}
+            >
               <option value="">— Ingen bestemt kamp —</option>
-              {matchesSorted.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>)}
+              {matchesSorted.map(m => (
+                <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>
+              ))}
             </select>
           </>
         )}
 
-        {msg && <div style={S.ok}>{msg.text}</div>}
+        {msg && <div style={msg.type === "err" ? S.err : S.ok}>{msg.text}</div>}
 
         {candidate ? (
           <div style={{ textAlign: "center", padding: "16px 0" }}>
             <div style={{ fontSize: "13px", color: C.muted, marginBottom: "6px" }}>🎲 Trukket:</div>
             <div style={{ fontSize: "22px", fontWeight: 800, color: C.gold, marginBottom: "16px" }}>{candidate}</div>
-            <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
-              <button title="Registrerer denne spiller som vasketøjs-ansvarlig" style={S.btn("primary", false)} onClick={confirmAssign}>✓ Bekræft</button>
-              <button title="Træk en ny tilfældig spiller i stedet" style={S.btn("secondary", false)} onClick={rollRandom}>🎲 Træk igen</button>
+            {confirmingAssign ? (
+              <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
+                <button title="Gem denne spiller som vasketøjs-ansvarlig" style={S.btn("primary", false)} onClick={confirmAssign}>Ja, gem {candidate.split(" ")[0]}</button>
+                <button title="Annuller bekræftelse" style={S.btn("secondary", false)} onClick={() => setConfirmingAssign(false)}>Fortryd</button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
+                {/* "Træk igen" først – det er den hyppige handling ved fejltryk */}
+                <button title="Træk en ny tilfældig spiller i stedet" style={S.btn("primary", false)} onClick={rollRandom}>🎲 Træk igen</button>
+                <button title="Registrerer denne spiller (kræver ekstra bekræftelse)" style={S.btn("secondary", false)} onClick={() => setConfirmingAssign(true)}>✓ Bekræft</button>
+              </div>
+            )}
+            <div style={{ fontSize: "11px", color: C.muted, marginTop: "10px" }}>
+              Er det forkert navn? Tryk “Træk igen”. Bekræft kræver et ekstra tryk, så du ikke gemmer ved et uheld.
             </div>
           </div>
         ) : (
           <button title="Vælger tilfældigt blandt dem der ikke har haft tøjet med for nylig" style={S.btn("primary")} onClick={rollRandom}>🎲 Træk tilfældig spiller</button>
         )}
+
+        <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>Eller vælg manuelt</div>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-start" }}>
+            <select style={{ ...S.input, marginBottom: 0, flex: "1 1 180px" }} value={manualName} onChange={e => setManualName(e.target.value)}>
+              <option value="">— Vælg spiller —</option>
+              {squad.map(n => <option key={n} value={n}>{n}{matchMotmName && n.toLowerCase() === matchMotmName.toLowerCase() ? " (kampens spiller)" : ""}</option>)}
+            </select>
+            <ConfirmButton
+              label="Registrér"
+              confirmLabel="Ja, registrér"
+              title="Registrerer den valgte spiller uden lodtrækning"
+              style={{ ...S.btn("secondary", false), marginBottom: 0 }}
+              confirmTone="primary"
+              onConfirm={assignManual}
+              disabled={!manualName.trim()}
+            />
+          </div>
+        </div>
       </div>
 
       <div>
@@ -1760,12 +1926,56 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
           <div style={{ fontSize: "13px", color: C.muted }}>Ingen registreringer endnu.</div>
         ) : (
           history.map(e => (
-            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", borderRadius: "7px", border: `1px solid ${C.border}`, marginBottom: "6px", gap: "8px" }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: "13px", fontWeight: 600 }}>{e.name}</div>
-                <div style={{ fontSize: "11px", color: C.muted }}>{fmtDanishTime(e.date)}{e.matchLabel ? ` · ${e.matchLabel}` : ""}</div>
-              </div>
-              <ConfirmButton label="🗑" confirmLabel="Slet" title="Slet denne registrering (bruges ved fejl)" style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px", flexShrink: 0 }} onConfirm={() => deleteEntry(e.id)} />
+            <div key={e.id} style={{ padding: "10px", borderRadius: "7px", border: `1px solid ${C.border}`, marginBottom: "6px" }}>
+              {String(editingId) === String(e.id) ? (
+                <div>
+                  <label style={S.label}>Spiller</label>
+                  <select style={S.input} value={editName} onChange={ev => setEditName(ev.target.value)}>
+                    {!squad.some(n => n.toLowerCase() === (editName || "").toLowerCase()) && editName && (
+                      <option value={editName}>{editName} (ikke i trup)</option>
+                    )}
+                    {squad.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  {matchesSorted.length > 0 && (
+                    <>
+                      <label style={S.label}>Kamp</label>
+                      <select style={S.input} value={editMatchId} onChange={ev => setEditMatchId(ev.target.value)}>
+                        <option value="">— Ingen bestemt kamp —</option>
+                        {matchesSorted.map(m => (
+                          <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>
+                        ))}
+                      </select>
+                    </>
+                  )}
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <button style={S.btn("primary", false)} onClick={saveEdit}>Gem rettelse</button>
+                    <button style={S.btn("secondary", false)} onClick={cancelEdit}>Fortryd</button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: "13px", fontWeight: 600 }}>{e.name}</div>
+                    <div style={{ fontSize: "11px", color: C.muted }}>{fmtDanishTime(e.date)}{e.matchLabel ? ` · ${e.matchLabel}` : ""}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: "4px", flexShrink: 0, alignItems: "center" }}>
+                    <button
+                      title="Ret spiller eller kamp for denne registrering"
+                      onClick={() => startEdit(e)}
+                      style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "6px", cursor: "pointer", color: C.text, fontSize: "11px", fontWeight: 600, padding: "6px 10px" }}
+                    >
+                      Ret
+                    </button>
+                    <ConfirmButton
+                      label="🗑"
+                      confirmLabel="Slet"
+                      title="Slet denne registrering"
+                      style={{ background: "transparent", border: "none", cursor: "pointer", color: C.danger, fontSize: "14px", padding: "8px" }}
+                      onConfirm={() => deleteEntry(e.id)}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           ))
         )}
@@ -1777,17 +1987,17 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
 // Native window.confirm() kan blive permanent blokeret af mobilbrowsere, hvis man
 // krydser "husk mit svar" af – derefter svarer den automatisk "nej" for evigt.
 // Denne knap bygger bekræftelsen ind i selve appen i stedet, så det aldrig sker.
-function ConfirmButton({ label, confirmLabel = "Ja, gør det", style, onConfirm, title }) {
+function ConfirmButton({ label, confirmLabel = "Ja, gør det", style, onConfirm, title, confirmTone = "danger", disabled = false }) {
   const [confirming, setConfirming] = useState(false);
   if (confirming) {
     return (
       <span style={{ display: "inline-flex", gap: "6px" }}>
-        <button title="Bekræft handlingen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onClick={() => { setConfirming(false); onConfirm(); }}>{confirmLabel}</button>
+        <button title="Bekræft handlingen" style={{ ...S.btn(confirmTone === "primary" ? "primary" : "danger", false), fontSize: "11px" }} onClick={() => { setConfirming(false); onConfirm(); }}>{confirmLabel}</button>
         <button title="Annuller, gør ingenting" style={{ ...S.btn("secondary", false), fontSize: "11px" }} onClick={() => setConfirming(false)}>Fortryd</button>
       </span>
     );
   }
-  return <button title={title} style={style} onClick={() => setConfirming(true)}>{label}</button>;
+  return <button title={title} style={style} disabled={disabled} onClick={() => !disabled && setConfirming(true)}>{label}</button>;
 }
 
 function slugify(text) {
