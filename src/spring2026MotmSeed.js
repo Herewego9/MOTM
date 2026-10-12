@@ -135,7 +135,7 @@ function deleteById(map, id) {
 }
 
 /**
- * KUN de 7 kendte Forår 2026 MotM-kampnr.
+ * KUN de kendte Forår 2026-kampnr (allowlist i SPRING_2026_MATCHES).
  * Ingen dato-heuristik – så Efterårskampe aldrig kan rammes ved en fejl.
  */
 export function collectSpring2026MatchIds() {
