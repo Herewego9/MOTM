@@ -11,6 +11,8 @@ export const SPRING_2026_MATCHES = [
   { id: 993213, date: "2026-04-25", time: "16:00", home: "Hornslet IF (1)", away: "ST 70", venue: "Sparekassen Danmark Park - Hornslet (kunst)" },
   { id: 993215, date: "2026-05-05", time: "19:00", home: "ST 70", away: "VSK Aarhus (3)", venue: "Trige Søndergård (Trige gl. Stadion)" },
   { id: 993220, date: "2026-05-08", time: "19:00", home: "ST 70", away: "Lisbjerg FC", venue: "Trige Søndergård (Trige gl. Stadion)" },
+  // Ingen MotM i Google Sheet – kampen skal stadig være i forårsprogrammet (1-2-sejr ude).
+  { id: 993223, date: "2026-05-16", time: "15:00", home: "Christiansbjerg IF (2)", away: "ST 70", venue: "Christiansbjerg Idrætsanlæg" },
   { id: 993228, date: "2026-06-07", time: "14:00", home: "ST 70", away: "Hornslet IF (1)", venue: "Trige Søndergård (Trige gl. Stadion)" },
   { id: 993230, date: "2026-06-15", time: "20:00", home: "VSK Aarhus (3)", away: "ST 70", venue: "VSK Aarhus" },
   { id: 993235, date: "2026-06-21", time: "13:00", home: "Lisbjerg FC", away: "ST 70", venue: "Lisbjerg Skole" },
@@ -133,7 +135,7 @@ function deleteById(map, id) {
 }
 
 /**
- * KUN de 7 kendte Forår 2026 MotM-kampnr.
+ * KUN de kendte Forår 2026-kampnr (allowlist i SPRING_2026_MATCHES).
  * Ingen dato-heuristik – så Efterårskampe aldrig kan rammes ved en fejl.
  */
 export function collectSpring2026MatchIds() {
@@ -196,7 +198,7 @@ function buildSpringArchivePayload(state) {
   const revealed = {};
   const matchStats = {};
 
-  // Udelukkende de 7 seed-kampe – aldrig andre kamp-id'er fra current.
+  // Udelukkende de kendte forårs-kampe – aldrig andre kamp-id'er fra current.
   for (const stub of SPRING_2026_MATCHES) {
     const id = String(stub.id);
     const match = byId.get(id) || stub;
@@ -206,20 +208,31 @@ function buildSpringArchivePayload(state) {
     const seedCounts = SPRING_2026_VOTES_BY_MATCH[stub.id];
     const matchVotes = existingVotes && Object.keys(existingVotes).length
       ? existingVotes
-      : votesFromCounts(seedCounts);
-
-    votes[id] = matchVotes;
-    revealed[id] = true;
-    const motm = resolveMotm(matchVotes);
+      : (seedCounts ? votesFromCounts(seedCounts) : {});
     const prev = lookupById(state.matchStats, id) || { players: [] };
-    // Tag kun MotM/stemmer med fra current for forårs-id; behold evt. players hvis de fandtes på netop dette id.
-    matchStats[id] = {
-      players: prev.players || [],
-      motmKey: motm.motmKey,
-      motmName: motm.motmName,
-      motmKeys: motm.motmKeys,
-      motmNames: motm.motmNames,
-    };
+
+    if (Object.keys(matchVotes).length) {
+      votes[id] = matchVotes;
+      revealed[id] = true;
+      const motm = resolveMotm(matchVotes);
+      matchStats[id] = {
+        players: prev.players || [],
+        motmKey: motm.motmKey,
+        motmName: motm.motmName,
+        motmKeys: motm.motmKeys,
+        motmNames: motm.motmNames,
+      };
+    } else {
+      // Kamp uden MotM-stemmer (fx 993223) – stadig med i programmet til statistik.
+      matchStats[id] = {
+        players: prev.players || [],
+        motmKey: prev.motmKey || null,
+        motmName: prev.motmName || null,
+        motmKeys: prev.motmKeys || [],
+        motmNames: prev.motmNames || [],
+      };
+      if (lookupById(state.revealed, id)) revealed[id] = true;
+    }
   }
 
   matches.sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")));
@@ -265,13 +278,87 @@ function upsertSeasonHistory(history, archiveEntry) {
   return combined.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt)).slice(0, 2);
 }
 
+/** Kamp-id'er fra SPRING_2026_MATCHES der mangler i Forår 2026-arkivet. */
+export function springArchiveMissingMatchIds(state) {
+  const arch = (state.seasonHistory || []).find(s => String(s.id) === String(SPRING_2026_ARCHIVE_ID));
+  if (!arch) return SPRING_2026_MATCHES.map(m => String(m.id));
+  const have = new Set((arch.matches || []).map(m => String(m.id)));
+  return SPRING_2026_MATCHES.filter(m => !have.has(String(m.id))).map(m => String(m.id));
+}
+
 /**
- * Lægger Forår 2026 i seasonHistory og fjerner KUN de 7 forårs-kampnr fra current.
- * Efterår (alle andre id'er + trup/vasketøj/holdnavn) verificeres uændret via guard.
+ * Tilføjer manglende forårs-kampe til eksisterende arkiv (fx 993223).
+ * Rører ikke Efterår ud over at strippe de kendte forårs-id'er hvis de lå i current.
+ */
+function syncMissingSpringMatchesToArchive(state) {
+  const missing = springArchiveMissingMatchIds(state);
+  if (!missing.length) {
+    return { state, applied: false, reason: "already_complete" };
+  }
+
+  const autumnBefore = snapshotNonSpringSeason(state);
+  const history = state.seasonHistory || [];
+  const idx = history.findIndex(s => String(s.id) === String(SPRING_2026_ARCHIVE_ID));
+  const fullPayload = buildSpringArchivePayload(state);
+
+  let archiveEntry;
+  if (idx < 0) {
+    archiveEntry = fullPayload;
+  } else {
+    const prev = history[idx];
+    const byId = new Map((prev.matches || []).map(m => [String(m.id), m]));
+    for (const m of fullPayload.matches) byId.set(String(m.id), byId.get(String(m.id)) || m);
+    const matches = [...byId.values()].sort((a, b) =>
+      (a.date + (a.time || "")).localeCompare(b.date + (b.time || ""))
+    );
+    const votes = { ...(prev.votes || {}) };
+    const revealed = { ...(prev.revealed || {}) };
+    const matchStats = { ...(prev.matchStats || {}) };
+    for (const id of missing) {
+      if (fullPayload.votes[id]) votes[id] = fullPayload.votes[id];
+      if (fullPayload.revealed[id]) revealed[id] = true;
+      if (fullPayload.matchStats[id] && !lookupById(matchStats, id)) {
+        matchStats[id] = fullPayload.matchStats[id];
+      } else if (fullPayload.matchStats[id] && !lookupById(matchStats, id)?.players?.length) {
+        matchStats[id] = fullPayload.matchStats[id];
+      }
+    }
+    archiveEntry = {
+      ...prev,
+      matches,
+      votes,
+      revealed,
+      matchStats,
+      label: SPRING_2026_ARCHIVE_LABEL,
+    };
+  }
+
+  const cleaned = stripSpringFromCurrent(state);
+  const seasonHistory = upsertSeasonHistory(history, archiveEntry);
+  const next = {
+    ...state,
+    ...cleaned,
+    seasonHistory,
+    squadNames: state.squadNames,
+    laundryHistory: state.laundryHistory,
+    teamName: state.teamName,
+    competition: state.competition,
+    dbuPoolId: state.dbuPoolId,
+    dbuTeamId: state.dbuTeamId,
+    [SPRING_2026_SEED_FLAG]: true,
+    [SPRING_2026_ARCHIVE_FLAG]: true,
+  };
+  assertAutumnUntouched(autumnBefore, next);
+  return { state: next, applied: true, reason: "synced_missing", missing };
+}
+
+/**
+ * Lægger Forår 2026 i seasonHistory og fjerner KUN kendte forårs-kampnr fra current.
+ * Efterår verificeres uændret via guard. Kan også synce manglende kampe ind i eksisterende arkiv.
  */
 export function applySpring2026MotmSeed(state) {
   if (state[SPRING_2026_ARCHIVE_FLAG]) {
-    return { state, applied: false, reason: "already_archived" };
+    return syncMissingSpringMatchesToArchive(state);
   }
 
   const autumnBefore = snapshotNonSpringSeason(state);
@@ -299,8 +386,9 @@ export function applySpring2026MotmSeed(state) {
   return { state: next, applied: true, reason: null };
 }
 
-/** True hvis forårsdata stadig ligger blandet ind i nuværende sæson (eller arkiv mangler). */
+/** True hvis forårsarkiv mangler, er ufuldstændigt, eller forårsdata stadig ligger i current. */
 export function needsSpring2026ArchiveAction(state) {
+  if (springArchiveMissingMatchIds(state).length > 0) return true;
   if (state[SPRING_2026_ARCHIVE_FLAG]) return false;
   if (state[SPRING_2026_SEED_FLAG]) return true; // seedet ind i current før arkiv-split
   for (const id of collectSpring2026MatchIds()) {
