@@ -2251,25 +2251,76 @@ function BackupTab({ state, dispatch }) {
     return "\uFEFF" + [headers.join(";"), ...rows.map(r => headers.map(h => escape(r[h])).join(";"))].join("\r\n");
   }
 
+  /** Nuværende sæson + alle arkiverede (Forår/Efterår) – til CSV med Sæson-kolonne. */
+  function allSeasonSlicesForExport() {
+    const comp = state.competition || "";
+    const currentLabel =
+      (comp.match(/(Forår|Efterår)\s*\d{4}/i) || [])[0] ||
+      "Nuværende sæson";
+    return [
+      {
+        label: currentLabel,
+        matches: state.matches || [],
+        votes: state.votes || {},
+        matchStats: state.matchStats || {},
+      },
+      ...(state.seasonHistory || []).map(s => ({
+        label: s.label || "Arkiveret sæson",
+        matches: s.matches || [],
+        votes: s.votes || {},
+        matchStats: s.matchStats || {},
+      })),
+    ];
+  }
+
   function exportSeasonCsv() {
-    const seasonStats = deriveSeasonStats(state.matchStats, state.votes);
-    const rows = Object.values(seasonStats)
-      .map(p => ({ Spiller: p.name, "Kampe med statistik": p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Stemmer: p.totalVotes || 0, Point: scorePlayer(p) }))
-      .sort((a, b) => b.Point - a.Point);
+    const rows = [];
+    for (const slice of allSeasonSlicesForExport()) {
+      const seasonStats = deriveSeasonStats(slice.matchStats, slice.votes);
+      Object.values(seasonStats).forEach(p => {
+        rows.push({
+          Sæson: slice.label,
+          Spiller: p.name,
+          "Kampe med statistik": p.matchesPlayed,
+          Mål: p.goals,
+          Assist: p.assists,
+          "Gule kort": p.yellowCards,
+          "Røde kort": p.redCards,
+          "Kampens spiller": p.motmWins,
+          Stemmer: p.totalVotes || 0,
+          Point: scorePlayer(p),
+        });
+      });
+    }
+    rows.sort((a, b) => a.Sæson.localeCompare(b.Sæson, "da") || b.Point - a.Point || a.Spiller.localeCompare(b.Spiller, "da"));
     if (!rows.length) { setMsg({ type: "err", text: "Ingen statistik at eksportere endnu." }); return; }
     downloadBlob(toCsv(rows), `${slugify(state.teamName)}-saesonstatistik.csv`, "text/csv;charset=utf-8;");
-    setMsg({ type: "ok", text: "Sæsonstatistik downloadet som CSV (åbnes direkte i Excel)." });
+    setMsg({ type: "ok", text: "Sæsonstatistik (Forår + Efterår) downloadet som CSV." });
   }
 
   function exportMatchesCsv() {
-    const rows = state.matches.map(m => {
-      const votes = state.votes[m.id] || {};
-      const totalVotes = Object.values(votes).reduce((a, b) => a + b.count, 0);
-      const winner = Object.entries(votes).sort((a, b) => b[1].count - a[1].count)[0];
-      return { Dato: m.date, Modstander: opponent(m, state.teamName), "Hjemme/ude": isHome(m, state.teamName) ? "Hjemme" : "Ude", "Kampens spiller": winner ? winner[1].name : "", Stemmer: totalVotes };
-    });
+    const rows = [];
+    for (const slice of allSeasonSlicesForExport()) {
+      for (const m of slice.matches || []) {
+        const votes = getMatchEntry(slice.votes, m.id) || {};
+        const totalVotes = Object.values(votes).reduce((a, b) => a + (b.count || 0), 0);
+        const winner = Object.entries(votes).sort((a, b) => b[1].count - a[1].count)[0];
+        const stats = getMatchEntry(slice.matchStats, m.id);
+        const motmName = stats?.motmName || (winner ? winner[1].name : "");
+        rows.push({
+          Sæson: slice.label,
+          Dato: m.date,
+          Modstander: opponent(m, state.teamName),
+          "Hjemme/ude": isHome(m, state.teamName) ? "Hjemme" : "Ude",
+          "Kampens spiller": motmName || "",
+          Stemmer: totalVotes,
+        });
+      }
+    }
+    rows.sort((a, b) => a.Dato.localeCompare(b.Dato) || a.Sæson.localeCompare(b.Sæson, "da"));
+    if (!rows.length) { setMsg({ type: "err", text: "Ingen kampe at eksportere endnu." }); return; }
     downloadBlob(toCsv(rows), `${slugify(state.teamName)}-kampe.csv`, "text/csv;charset=utf-8;");
-    setMsg({ type: "ok", text: "Kampresultater downloadet som CSV." });
+    setMsg({ type: "ok", text: "Kampresultater (Forår + Efterår) downloadet som CSV." });
   }
 
   function handleImport(e) {
@@ -2311,11 +2362,13 @@ function BackupTab({ state, dispatch }) {
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Eksport</div>
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-          <button title="Downloader spillerstatistik som CSV-fil til Excel" style={{ ...S.btn("primary", false) }} onClick={exportSeasonCsv}>📊 Sæsonstatistik (CSV)</button>
-          <button title="Downloader kampresultater og kampens spiller-vindere som CSV-fil" style={{ ...S.btn("primary", false) }} onClick={exportMatchesCsv}>📋 Kampresultater (CSV)</button>
+          <button title="Downloader spillerstatistik for alle sæsoner (Forår + Efterår) som CSV" style={{ ...S.btn("primary", false) }} onClick={exportSeasonCsv}>📊 Sæsonstatistik (CSV)</button>
+          <button title="Downloader kampresultater for alle sæsoner (Forår + Efterår) som CSV" style={{ ...S.btn("primary", false) }} onClick={exportMatchesCsv}>📋 Kampresultater (CSV)</button>
           <button title="Downloader en fuld sikkerhedskopi af alt data" style={{ ...S.btn("secondary", false) }} onClick={exportJson}>💾 Download backup.json</button>
         </div>
-        <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>CSV-filer åbnes direkte i Excel, Numbers eller Google Sheets.</div>
+        <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>
+          CSV indeholder både nuværende og arkiverede sæsoner (kolonnen «Sæson»). Åbnes direkte i Excel, Numbers eller Google Sheets.
+        </div>
       </div>
 
       {needsSpring2026ArchiveAction(state) && (() => {
