@@ -503,8 +503,14 @@ function reducer(state, action) {
       return { ...state, openMatchId: state.openMatchId === action.matchId ? null : state.openMatchId, revealed: { ...state.revealed, [action.matchId]: false }, votes: newVotes, votedMatches: newVoted, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey: null, motmName: null, motmKeys: [], motmNames: [] } } };
     }
     case "SEED_SPRING_2026_MOTM": {
-      const { state: next, applied } = applySpring2026MotmSeed(state);
-      return applied ? next : state;
+      try {
+        const { state: next, applied } = applySpring2026MotmSeed(state);
+        return applied ? next : state;
+      } catch (e) {
+        // Sikkerhedsstop: Efterårsdata må aldrig ændres – behold state uændret.
+        console.error(e);
+        return state;
+      }
     }
     case "RESET_MATCH": {
       const newVotes = { ...state.votes }; delete newVotes[action.matchId];
@@ -2315,18 +2321,35 @@ function BackupTab({ state, dispatch }) {
         <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
           <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Éngangs · Adskil Forår 2026</div>
           <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.55 }}>
-            Lægger MotM-stemmer for Forår 2026 i en <strong style={{ color: C.text, fontWeight: 600 }}>arkiveret sæson</strong> og fjerner dem fra nuværende (Efterår),
-            så ranglisten ikke blander de to sæsoner. Kan kun køres én gang.
+            Lægger MotM-stemmer for <strong style={{ color: C.text, fontWeight: 600 }}>kun de 7 Forår 2026-kampe</strong> i et arkiv.
+            <strong style={{ color: C.gold, fontWeight: 700 }}> Efterårssæsonen røres ikke</strong> (stemmer, statistik, trup, vasketøj, kampprogram).
+            Kan kun køres én gang. Stoppes automatisk hvis Efterår ville blive ændret.
           </div>
           <ConfirmButton
             label="Arkivér Forår 2026-stemmer"
-            confirmLabel="Ja, adskil sæsonerne"
-            title="Flytter forårsstemmer til arkiv og renser nuværende sæson"
+            confirmLabel="Ja – kun forår, rør ikke efterår"
+            title="Flytter kun de 7 forårs-kampnr til arkiv. Efterår forbliver uændret."
             confirmTone="primary"
             style={{ ...S.btn("primary", false) }}
             onConfirm={() => {
-              dispatch({ type: "SEED_SPRING_2026_MOTM" });
-              setMsg({ type: "ok", text: "Forår 2026 er arkiveret. Vælg sæsonen under Rangliste for at se forårsstatistik." });
+              try {
+                // Kør først lokalt – hvis Efterårs-guard fejler, dispatch’es intet.
+                const preview = applySpring2026MotmSeed(state);
+                if (!preview.applied) {
+                  setMsg({ type: "err", text: "Forår 2026 er allerede arkiveret." });
+                  return;
+                }
+                dispatch({ type: "SEED_SPRING_2026_MOTM" });
+                setMsg({
+                  type: "ok",
+                  text: "Forår 2026 er arkiveret. Efterår er uændret. Vælg Forår 2026 under Rangliste/Admin for at se eller redigere den.",
+                });
+              } catch (e) {
+                setMsg({
+                  type: "err",
+                  text: e?.message || "Arkivering afbrudt – Efterårsdata er ikke ændret.",
+                });
+              }
             }}
           />
         </div>

@@ -132,25 +132,60 @@ function deleteById(map, id) {
   delete map[String(id)];
 }
 
-/** Alle kamp-id'er der hører til Forår 2026 (seed + kampe med forårsdato i state). */
-export function collectSpring2026MatchIds(state) {
-  const ids = new Set(SPRING_SEED_IDS);
-  for (const m of state.matches || []) {
-    if (m?.date && m.date >= "2026-01-01" && m.date < "2026-07-01") {
-      ids.add(String(m.id));
-    }
-  }
-  // Stemmer/stats på seed-id'er tæller også, selvom kampen er fjernet fra matches.
-  for (const id of Object.keys(state.votes || {})) {
-    if (SPRING_SEED_IDS.has(String(id))) ids.add(String(id));
-  }
-  for (const id of Object.keys(state.matchStats || {})) {
-    if (SPRING_SEED_IDS.has(String(id))) ids.add(String(id));
-  }
-  return ids;
+/**
+ * KUN de 7 kendte Forår 2026 MotM-kampnr.
+ * Ingen dato-heuristik – så Efterårskampe aldrig kan rammes ved en fejl.
+ */
+export function collectSpring2026MatchIds() {
+  return new Set(SPRING_SEED_IDS);
 }
 
-function buildSpringArchivePayload(state, springIds) {
+function isSpringMatchId(id) {
+  return SPRING_SEED_IDS.has(String(id));
+}
+
+/** Snapshot af alt der IKKE er forårs-id – bruges til at bevise at Efterår er urørt. */
+export function snapshotNonSpringSeason(state) {
+  const keep = (map) => {
+    const out = {};
+    Object.entries(map || {}).forEach(([k, v]) => {
+      if (!isSpringMatchId(k)) out[String(k)] = v;
+    });
+    return out;
+  };
+  return {
+    matches: (state.matches || [])
+      .filter(m => !isSpringMatchId(m.id))
+      .map(m => ({ ...m })),
+    votes: keep(state.votes),
+    revealed: keep(state.revealed),
+    matchStats: keep(state.matchStats),
+    openMatchId: state.openMatchId != null && isSpringMatchId(state.openMatchId)
+      ? null
+      : state.openMatchId,
+    squadNames: state.squadNames,
+    laundryHistory: state.laundryHistory,
+    teamName: state.teamName,
+    competition: state.competition,
+    dbuPoolId: state.dbuPoolId,
+    dbuTeamId: state.dbuTeamId,
+  };
+}
+
+function assertAutumnUntouched(before, after) {
+  const beforeJson = JSON.stringify(before);
+  const afterSnap = snapshotNonSpringSeason(after);
+  const afterJson = JSON.stringify(afterSnap);
+  if (beforeJson !== afterJson) {
+    const err = new Error(
+      "SIKKERHEDSSTOP: Arkivering ville have ændret Efterårsdata. Afbrudt – intet er gemt."
+    );
+    err.code = "AUTUMN_GUARD";
+    throw err;
+  }
+}
+
+function buildSpringArchivePayload(state) {
   const byId = new Map((state.matches || []).map(m => [String(m.id), m]));
   for (const stub of SPRING_2026_MATCHES) {
     if (!byId.has(String(stub.id))) byId.set(String(stub.id), stub);
@@ -161,42 +196,30 @@ function buildSpringArchivePayload(state, springIds) {
   const revealed = {};
   const matchStats = {};
 
-  // Sørg for at alle seed-kampe er med, plus øvrige forårsdato-kampe.
-  const orderedIds = [
-    ...SPRING_2026_MATCHES.map(m => String(m.id)),
-    ...[...springIds].filter(id => !SPRING_SEED_IDS.has(id)),
-  ];
-
-  for (const id of orderedIds) {
-    const match = byId.get(String(id));
-    if (match) matches.push(match);
+  // Udelukkende de 7 seed-kampe – aldrig andre kamp-id'er fra current.
+  for (const stub of SPRING_2026_MATCHES) {
+    const id = String(stub.id);
+    const match = byId.get(id) || stub;
+    matches.push(match);
 
     const existingVotes = lookupById(state.votes, id);
-    const seedCounts = SPRING_2026_VOTES_BY_MATCH[Number(id)] || SPRING_2026_VOTES_BY_MATCH[id];
+    const seedCounts = SPRING_2026_VOTES_BY_MATCH[stub.id];
     const matchVotes = existingVotes && Object.keys(existingVotes).length
       ? existingVotes
-      : (seedCounts ? votesFromCounts(seedCounts) : null);
+      : votesFromCounts(seedCounts);
 
-    if (matchVotes && Object.keys(matchVotes).length) {
-      votes[id] = matchVotes;
-      revealed[id] = true;
-      const motm = resolveMotm(matchVotes);
-      const prev = lookupById(state.matchStats, id) || { players: [] };
-      matchStats[id] = {
-        ...prev,
-        players: prev.players || [],
-        motmKey: motm.motmKey,
-        motmName: motm.motmName,
-        motmKeys: motm.motmKeys,
-        motmNames: motm.motmNames,
-      };
-    } else {
-      const prev = lookupById(state.matchStats, id);
-      if (prev) {
-        matchStats[id] = prev;
-        if (lookupById(state.revealed, id)) revealed[id] = true;
-      }
-    }
+    votes[id] = matchVotes;
+    revealed[id] = true;
+    const motm = resolveMotm(matchVotes);
+    const prev = lookupById(state.matchStats, id) || { players: [] };
+    // Tag kun MotM/stemmer med fra current for forårs-id; behold evt. players hvis de fandtes på netop dette id.
+    matchStats[id] = {
+      players: prev.players || [],
+      motmKey: motm.motmKey,
+      motmName: motm.motmName,
+      motmKeys: motm.motmKeys,
+      motmNames: motm.motmNames,
+    };
   }
 
   matches.sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")));
@@ -214,8 +237,9 @@ function buildSpringArchivePayload(state, springIds) {
   };
 }
 
-function stripSpringFromCurrent(state, springIds) {
-  const matches = (state.matches || []).filter(m => !springIds.has(String(m.id)));
+function stripSpringFromCurrent(state) {
+  const springIds = collectSpring2026MatchIds();
+  const matches = (state.matches || []).filter(m => !isSpringMatchId(m.id));
   const votes = { ...(state.votes || {}) };
   const revealed = { ...(state.revealed || {}) };
   const matchStats = { ...(state.matchStats || {}) };
@@ -227,7 +251,7 @@ function stripSpringFromCurrent(state, springIds) {
   }
 
   let openMatchId = state.openMatchId;
-  if (openMatchId != null && springIds.has(String(openMatchId))) {
+  if (openMatchId != null && isSpringMatchId(openMatchId)) {
     openMatchId = null;
   }
 
@@ -242,38 +266,44 @@ function upsertSeasonHistory(history, archiveEntry) {
 }
 
 /**
- * Lægger Forår 2026 i seasonHistory og fjerner forårsdata fra nuværende (Efterår) sæson.
- * Kan køres både første gang og som migration, hvis forårsstemmer allerede ligger i current.
+ * Lægger Forår 2026 i seasonHistory og fjerner KUN de 7 forårs-kampnr fra current.
+ * Efterår (alle andre id'er + trup/vasketøj/holdnavn) verificeres uændret via guard.
  */
 export function applySpring2026MotmSeed(state) {
   if (state[SPRING_2026_ARCHIVE_FLAG]) {
     return { state, applied: false, reason: "already_archived" };
   }
 
-  const springIds = collectSpring2026MatchIds(state);
-  const archiveEntry = buildSpringArchivePayload(state, springIds);
-  const cleaned = stripSpringFromCurrent(state, springIds);
+  const autumnBefore = snapshotNonSpringSeason(state);
+  const archiveEntry = buildSpringArchivePayload(state);
+  const cleaned = stripSpringFromCurrent(state);
   const seasonHistory = upsertSeasonHistory(state.seasonHistory, archiveEntry);
 
-  return {
-    state: {
-      ...state,
-      ...cleaned,
-      seasonHistory,
-      [SPRING_2026_SEED_FLAG]: true,
-      [SPRING_2026_ARCHIVE_FLAG]: true,
-    },
-    applied: true,
-    reason: null,
+  const next = {
+    ...state,
+    ...cleaned,
+    seasonHistory,
+    // Bevar Efterårs-metadata eksplicit (røres aldrig af strip).
+    squadNames: state.squadNames,
+    laundryHistory: state.laundryHistory,
+    teamName: state.teamName,
+    competition: state.competition,
+    dbuPoolId: state.dbuPoolId,
+    dbuTeamId: state.dbuTeamId,
+    [SPRING_2026_SEED_FLAG]: true,
+    [SPRING_2026_ARCHIVE_FLAG]: true,
   };
+
+  assertAutumnUntouched(autumnBefore, next);
+
+  return { state: next, applied: true, reason: null };
 }
 
 /** True hvis forårsdata stadig ligger blandet ind i nuværende sæson (eller arkiv mangler). */
 export function needsSpring2026ArchiveAction(state) {
   if (state[SPRING_2026_ARCHIVE_FLAG]) return false;
   if (state[SPRING_2026_SEED_FLAG]) return true; // seedet ind i current før arkiv-split
-  const springIds = collectSpring2026MatchIds(state);
-  for (const id of springIds) {
+  for (const id of collectSpring2026MatchIds()) {
     if (lookupById(state.votes, id)) return true;
     if (lookupById(state.matchStats, id)?.motmKey) return true;
   }
