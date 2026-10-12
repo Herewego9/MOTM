@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
-  SPRING_2026_SEED_FLAG,
+  SPRING_2026_ARCHIVE_FLAG,
   applySpring2026MotmSeed,
   getMotmWinners,
+  needsSpring2026ArchiveAction,
   resolveMotm,
 } from "./spring2026MotmSeed.js";
 
@@ -110,7 +111,8 @@ const INIT_SHARED = {
   competition: null, // Række/turnering, sættes automatisk fra DBU
   // DBU API-nøgle gemmes IKKE her (kun pool/team-id). Nøglen ligger i sessionStorage på admin-enheden.
   dbuPoolId: "", dbuTeamId: "",
-  [SPRING_2026_SEED_FLAG]: false, // Éngangs-seed af MotM-stemmer for Forår 2026
+  spring2026MotmSeeded: false, // MotM-stemmer for Forår 2026 er indlæst
+  [SPRING_2026_ARCHIVE_FLAG]: false, // Forår 2026 ligger i seasonHistory (adskilt fra Efterår)
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -2196,22 +2198,22 @@ function BackupTab({ state, dispatch }) {
         <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>CSV-filer åbnes direkte i Excel, Numbers eller Google Sheets.</div>
       </div>
 
-      {!state[SPRING_2026_SEED_FLAG] && (
+      {needsSpring2026ArchiveAction(state) && (
         <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
-          <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Éngangs-seed · Forår 2026</div>
+          <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Éngangs · Adskil Forår 2026</div>
           <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.55 }}>
-            Indlæser MotM-stemmer fra Google Sheet for de 7 forårskampe (DBU-kampnr). Overskriver ikke mål/assist/kort.
-            Kan kun køres én gang.
+            Lægger MotM-stemmer for Forår 2026 i en <strong style={{ color: C.text, fontWeight: 600 }}>arkiveret sæson</strong> og fjerner dem fra nuværende (Efterår),
+            så ranglisten ikke blander de to sæsoner. Kan kun køres én gang.
           </div>
           <ConfirmButton
-            label="Indlæs forår 2026-stemmer"
-            confirmLabel="Ja, indlæs stemmer"
-            title="Indlæser historiske MotM-stemmer for Forår 2026"
+            label="Arkivér Forår 2026-stemmer"
+            confirmLabel="Ja, adskil sæsonerne"
+            title="Flytter forårsstemmer til arkiv og renser nuværende sæson"
             confirmTone="primary"
             style={{ ...S.btn("primary", false) }}
             onConfirm={() => {
               dispatch({ type: "SEED_SPRING_2026_MOTM" });
-              setMsg({ type: "ok", text: "Forår 2026 MotM-stemmer er indlæst i statistikken." });
+              setMsg({ type: "ok", text: "Forår 2026 er arkiveret. Vælg sæsonen under Rangliste for at se forårsstatistik." });
             }}
           />
         </div>
