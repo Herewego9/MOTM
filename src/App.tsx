@@ -179,27 +179,42 @@ function scorePlayer(p) {
   return p.score || 0;
 }
 
-/** Sæsonens spiller = flest stemmer; Sæsonens fighter = flest KS-sejre (nr. 2 hvis samme som spiller). */
-function deriveSeasonAwards(votes, matchStats) {
-  const seasonStats = deriveSeasonStats(matchStats, votes);
-  const players = Object.values(seasonStats);
-  if (!players.length) return { seasonPlayer: null, seasonFighter: null };
+function isCurrentSeasonId(seasonId) {
+  return !seasonId || seasonId === "current";
+}
 
-  const byVotes = [...players].sort((a, b) =>
-    b.totalVotes - a.totalVotes || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists
-  );
-  const byMotm = [...players].sort((a, b) =>
-    b.motmWins - a.motmWins || b.totalVotes - a.totalVotes || b.goals - a.goals || b.assists - a.assists
-  );
+/** Opdaterer én arkiveret sæson i seasonHistory. */
+function mapArchivedSeason(state, seasonId, mapFn) {
+  const history = state.seasonHistory || [];
+  const idx = history.findIndex(s => String(s.id) === String(seasonId));
+  if (idx < 0) return state;
+  const nextSeason = mapFn(history[idx]);
+  if (!nextSeason || nextSeason === history[idx]) return state;
+  return {
+    ...state,
+    seasonHistory: history.map((s, i) => (i === idx ? nextSeason : s)),
+  };
+}
 
-  const seasonPlayer = byVotes[0] && (byVotes[0].totalVotes > 0 || byVotes[0].motmWins > 0)
-    ? byVotes[0]
-    : null;
-  let seasonFighter = byMotm.find(p => p.motmWins > 0) || null;
-  if (seasonPlayer && seasonFighter && seasonPlayer.name.toLowerCase() === seasonFighter.name.toLowerCase()) {
-    seasonFighter = byMotm.find(p => p.name.toLowerCase() !== seasonPlayer.name.toLowerCase() && p.motmWins > 0) || null;
+function getMatchEntry(map, matchId) {
+  if (!map) return undefined;
+  if (map[matchId] !== undefined) return map[matchId];
+  if (map[String(matchId)] !== undefined) return map[String(matchId)];
+  const asNum = Number(matchId);
+  if (!Number.isNaN(asNum) && map[asNum] !== undefined) return map[asNum];
+  return undefined;
+}
+
+function setMatchEntry(map, matchId, value) {
+  const next = { ...(map || {}) };
+  if (Object.prototype.hasOwnProperty.call(next, String(matchId))) {
+    next[String(matchId)] = value;
+  } else if (Object.prototype.hasOwnProperty.call(next, matchId)) {
+    next[matchId] = value;
+  } else {
+    next[matchId] = value;
   }
-  return { seasonPlayer, seasonFighter };
+  return next;
 }
 
 // ---- Designsystem: "Matchday" – banegrøn nat, scoreboard-typografi ----
@@ -435,29 +450,39 @@ function reducer(state, action) {
       // Admin retter/samler en fejlstavet stemme. Skriver man et navn der allerede
       // har stemmer, FLETTES de to sammen (tæller lægges sammen). Skriver man et nyt
       // navn, omdøbes stemmen bare til det.
-      const { matchId, oldKey, newName } = action;
-      const prev = state.votes[matchId] || {};
-      const oldEntry = prev[oldKey];
-      if (!oldEntry) return state;
-      const newKey = newName.trim().toLowerCase();
-      if (!newKey) return state;
-      const next = { ...prev };
-      delete next[oldKey];
-      if (newKey === oldKey) {
-        next[newKey] = { ...oldEntry, name: newName.trim() };
-      } else {
-        const existing = next[newKey];
-        next[newKey] = { count: (existing?.count || 0) + oldEntry.count, name: existing?.name || newName.trim() };
+      const { matchId, oldKey, newName, seasonId } = action;
+      const applyEdit = (votes, matchStats, revealed) => {
+        const prev = { ...(getMatchEntry(votes, matchId) || {}) };
+        const oldEntry = prev[oldKey];
+        if (!oldEntry) return null;
+        const newKey = newName.trim().toLowerCase();
+        if (!newKey) return null;
+        delete prev[oldKey];
+        if (newKey === oldKey) {
+          prev[newKey] = { ...oldEntry, name: newName.trim() };
+        } else {
+          const existing = prev[newKey];
+          prev[newKey] = { count: (existing?.count || 0) + oldEntry.count, name: existing?.name || newName.trim() };
+        }
+        let nextStats = matchStats;
+        if (getMatchEntry(revealed, matchId)) {
+          const motm = resolveMotm(prev);
+          const prevMatchData = getMatchEntry(matchStats, matchId) || { players: [] };
+          nextStats = setMatchEntry(matchStats, matchId, { ...prevMatchData, ...motm });
+        }
+        return {
+          votes: setMatchEntry(votes, matchId, prev),
+          matchStats: nextStats,
+        };
+      };
+      if (!isCurrentSeasonId(seasonId)) {
+        return mapArchivedSeason(state, seasonId, (season) => {
+          const patched = applyEdit(season.votes || {}, season.matchStats || {}, season.revealed || {});
+          return patched ? { ...season, ...patched } : season;
+        });
       }
-      // Er kampen allerede afsluttet, kan rettelsen ændre hvem der reelt har flest
-      // stemmer – genberegn derfor vinderen, så statistikken forbliver korrekt.
-      let matchStats = state.matchStats;
-      if (state.revealed[matchId]) {
-        const motm = resolveMotm(next);
-        const prevMatchData = matchStats[matchId] || { players: [] };
-        matchStats = { ...matchStats, [matchId]: { ...prevMatchData, ...motm } };
-      }
-      return { ...state, votes: { ...state.votes, [matchId]: next }, matchStats };
+      const patched = applyEdit(state.votes || {}, state.matchStats || {}, state.revealed || {});
+      return patched ? { ...state, ...patched } : state;
     }
     case "OPEN_MATCH":
       // Kun én afstemning ad gangen – blokér åbning af ny kamp, mens en anden er åben.
@@ -478,8 +503,14 @@ function reducer(state, action) {
       return { ...state, openMatchId: state.openMatchId === action.matchId ? null : state.openMatchId, revealed: { ...state.revealed, [action.matchId]: false }, votes: newVotes, votedMatches: newVoted, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey: null, motmName: null, motmKeys: [], motmNames: [] } } };
     }
     case "SEED_SPRING_2026_MOTM": {
-      const { state: next, applied } = applySpring2026MotmSeed(state);
-      return applied ? next : state;
+      try {
+        const { state: next, applied } = applySpring2026MotmSeed(state);
+        return applied ? next : state;
+      } catch (e) {
+        // Sikkerhedsstop: Efterårsdata må aldrig ændres – behold state uændret.
+        console.error(e);
+        return state;
+      }
     }
     case "RESET_MATCH": {
       const newVotes = { ...state.votes }; delete newVotes[action.matchId];
@@ -489,60 +520,101 @@ function reducer(state, action) {
       return { ...state, openMatchId: state.openMatchId === action.matchId ? null : state.openMatchId, votes: newVotes, revealed: newRevealed, matchStats: newMatchStats, votedMatches: newVoted };
     }
     case "UPSERT_PLAYER": {
-      const { matchId, player } = action;
-      const prevData = state.matchStats[matchId] || { players: [], motmKey: null };
-      const key = player.name.toLowerCase();
-      const exists = prevData.players.some(p => p.name.toLowerCase() === key);
-      const newPlayers = exists ? prevData.players.map(p => p.name.toLowerCase() === key ? { ...p, ...player } : p) : [...prevData.players, player];
-      return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
+      const { matchId, player, seasonId } = action;
+      const apply = (matchStats) => {
+        const prevData = getMatchEntry(matchStats, matchId) || { players: [], motmKey: null };
+        const key = player.name.toLowerCase();
+        const exists = (prevData.players || []).some(p => p.name.toLowerCase() === key);
+        const newPlayers = exists
+          ? prevData.players.map(p => p.name.toLowerCase() === key ? { ...p, ...player } : p)
+          : [...(prevData.players || []), player];
+        return setMatchEntry(matchStats, matchId, { ...prevData, players: newPlayers });
+      };
+      if (!isCurrentSeasonId(seasonId)) {
+        return mapArchivedSeason(state, seasonId, (season) => ({
+          ...season,
+          matchStats: apply(season.matchStats || {}),
+        }));
+      }
+      return { ...state, matchStats: apply(state.matchStats || {}) };
     }
     case "RENAME_AND_UPSERT_PLAYER": {
       // Bruges når admin retter en spillers NAVN under redigering (fx "Ukendt spiller" → korrekt navn).
       // Fjerner den gamle række og opdaterer/opretter den nye i ét samlet trin.
-      const { matchId, oldKey, player } = action;
-      const prevData = state.matchStats[matchId] || { players: [], motmKey: null };
-      const newKey = player.name.toLowerCase();
-      if (oldKey === newKey) {
-        const newPlayers = prevData.players.map(p => p.name.toLowerCase() === oldKey ? { ...p, ...player } : p);
-        return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
+      const { matchId, oldKey, player, seasonId } = action;
+      const apply = (matchStats) => {
+        const prevData = getMatchEntry(matchStats, matchId) || { players: [], motmKey: null };
+        const newKey = player.name.toLowerCase();
+        if (oldKey === newKey) {
+          const newPlayers = (prevData.players || []).map(p => p.name.toLowerCase() === oldKey ? { ...p, ...player } : p);
+          return setMatchEntry(matchStats, matchId, { ...prevData, players: newPlayers });
+        }
+        let newPlayers = (prevData.players || []).filter(p => p.name.toLowerCase() !== oldKey);
+        const existingIdx = newPlayers.findIndex(p => p.name.toLowerCase() === newKey);
+        if (existingIdx >= 0) {
+          // Flettes ind i en eksisterende spiller i samme kamp – læg tallene sammen i
+          // stedet for at overskrive, så ingen registreret statistik går tabt.
+          const ex = newPlayers[existingIdx];
+          newPlayers[existingIdx] = {
+            name: ex.name,
+            goals: (ex.goals || 0) + (player.goals || 0),
+            assists: (ex.assists || 0) + (player.assists || 0),
+            yellowCards: (ex.yellowCards || 0) + (player.yellowCards || 0),
+            redCards: (ex.redCards || 0) + (player.redCards || 0),
+          };
+        } else {
+          newPlayers = [...newPlayers, player];
+        }
+        return setMatchEntry(matchStats, matchId, { ...prevData, players: newPlayers });
+      };
+      if (!isCurrentSeasonId(seasonId)) {
+        return mapArchivedSeason(state, seasonId, (season) => ({
+          ...season,
+          matchStats: apply(season.matchStats || {}),
+        }));
       }
-      let newPlayers = prevData.players.filter(p => p.name.toLowerCase() !== oldKey);
-      const existingIdx = newPlayers.findIndex(p => p.name.toLowerCase() === newKey);
-      if (existingIdx >= 0) {
-        // Flettes ind i en eksisterende spiller i samme kamp – læg tallene sammen i
-        // stedet for at overskrive, så ingen registreret statistik går tabt.
-        const ex = newPlayers[existingIdx];
-        newPlayers[existingIdx] = {
-          name: ex.name,
-          goals: (ex.goals || 0) + (player.goals || 0),
-          assists: (ex.assists || 0) + (player.assists || 0),
-          yellowCards: (ex.yellowCards || 0) + (player.yellowCards || 0),
-          redCards: (ex.redCards || 0) + (player.redCards || 0),
-        };
-      } else {
-        newPlayers = [...newPlayers, player];
-      }
-      return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
+      return { ...state, matchStats: apply(state.matchStats || {}) };
     }
     case "UPSERT_PLAYERS": {
       // Ligesom UPSERT_PLAYER, men opdaterer flere spillere i ÉT trin (ét dispatch,
       // ét Supabase-gem). Undgår race condition ved mange enkeltvise dispatch-kald
       // i træk, som kunne få nogle spillere til at "forsvinde" igen.
-      const { matchId, players } = action;
-      const prevData = state.matchStats[matchId] || { players: [], motmKey: null };
-      let newPlayers = [...prevData.players];
-      players.forEach(player => {
-        const key = player.name.toLowerCase();
-        const idx = newPlayers.findIndex(p => p.name.toLowerCase() === key);
-        if (idx >= 0) newPlayers[idx] = { ...newPlayers[idx], ...player };
-        else newPlayers.push(player);
-      });
-      return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: newPlayers } } };
+      const { matchId, players, seasonId } = action;
+      const apply = (matchStats) => {
+        const prevData = getMatchEntry(matchStats, matchId) || { players: [], motmKey: null };
+        let newPlayers = [...(prevData.players || [])];
+        players.forEach(player => {
+          const key = player.name.toLowerCase();
+          const idx = newPlayers.findIndex(p => p.name.toLowerCase() === key);
+          if (idx >= 0) newPlayers[idx] = { ...newPlayers[idx], ...player };
+          else newPlayers.push(player);
+        });
+        return setMatchEntry(matchStats, matchId, { ...prevData, players: newPlayers });
+      };
+      if (!isCurrentSeasonId(seasonId)) {
+        return mapArchivedSeason(state, seasonId, (season) => ({
+          ...season,
+          matchStats: apply(season.matchStats || {}),
+        }));
+      }
+      return { ...state, matchStats: apply(state.matchStats || {}) };
     }
     case "DELETE_PLAYER": {
-      const { matchId, playerKey } = action;
-      const prevData = state.matchStats[matchId] || { players: [], motmKey: null };
-      return { ...state, matchStats: { ...state.matchStats, [matchId]: { ...prevData, players: prevData.players.filter(p => p.name.toLowerCase() !== playerKey) } } };
+      const { matchId, playerKey, seasonId } = action;
+      const apply = (matchStats) => {
+        const prevData = getMatchEntry(matchStats, matchId) || { players: [], motmKey: null };
+        return setMatchEntry(matchStats, matchId, {
+          ...prevData,
+          players: (prevData.players || []).filter(p => p.name.toLowerCase() !== playerKey),
+        });
+      };
+      if (!isCurrentSeasonId(seasonId)) {
+        return mapArchivedSeason(state, seasonId, (season) => ({
+          ...season,
+          matchStats: apply(season.matchStats || {}),
+        }));
+      }
+      return { ...state, matchStats: apply(state.matchStats || {}) };
     }
     case "SET_SQUAD":
       return { ...state, squadNames: [...action.names].sort((a, b) => a.localeCompare(b, "da")) };
@@ -769,7 +841,6 @@ function RankingView({ state }) {
   const players = Object.values(seasonStats)
     .map(p => ({ ...p, score: scorePlayer(p) }))
     .sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
-  const { seasonPlayer, seasonFighter } = deriveSeasonAwards(votesSource, matchStatsSource);
 
   const medal = i => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
   const maxScore = players[0]?.score || 1;
@@ -808,33 +879,6 @@ function RankingView({ state }) {
         {tabBtn("stats", "Detaljer")}
       </div>
 
-      {(seasonPlayer || seasonFighter) && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
-          <div style={{ ...S.card, marginTop: 0, padding: "16px", flex: "1 1 160px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: "6px" }}>Sæsonens spiller</div>
-            <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, color: C.gold, letterSpacing: "0.2px" }}>
-              {seasonPlayer ? seasonPlayer.name : "–"}
-            </div>
-            {seasonPlayer && (
-              <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
-                {seasonPlayer.totalVotes} stemme{seasonPlayer.totalVotes !== 1 ? "r" : ""} · {seasonPlayer.motmWins} KS
-              </div>
-            )}
-          </div>
-          <div style={{ ...S.card, marginTop: 0, padding: "16px", flex: "1 1 160px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: "6px" }}>Sæsonens fighter</div>
-            <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, color: C.blue, letterSpacing: "0.2px" }}>
-              {seasonFighter ? seasonFighter.name : "–"}
-            </div>
-            {seasonFighter && (
-              <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
-                {seasonFighter.motmWins} KS · {seasonFighter.totalVotes} stemme{seasonFighter.totalVotes !== 1 ? "r" : ""}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {!players.length ? (
         <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>
           {mode === "stats" ? `Ingen statistik ${archived ? "for denne sæson" : "endnu"}.` : "Ranglisten opdateres, når der er registreret statistik."}
@@ -852,8 +896,7 @@ function RankingView({ state }) {
           {showPoints && (
             <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px", lineHeight: 1.6 }}>
               Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort.<br />
-              Mål/assist kan højst give {MAX_GOAL_ASSIST_POINTS_PER_MATCH} point i én kamp – kampens spiller-titlen giver derfor altid flest point den kamp.<br />
-              Sæsonens spiller = flest MotM-stemmer. Sæsonens fighter = flest KS-sejre (nr. 2 hvis samme person).
+              Mål/assist kan højst give {MAX_GOAL_ASSIST_POINTS_PER_MATCH} point i én kamp – kampens spiller-titlen giver derfor altid flest point den kamp.
             </div>
           )}
           {players.map((p, i) => (
@@ -920,6 +963,27 @@ function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatc
   const [tab, setTab] = useState("matches");
   const [resetLabel, setResetLabel] = useState(`Sæson ${new Date().getFullYear()}`);
   const [resettingAll, setResettingAll] = useState(false);
+  const [adminSeasonId, setAdminSeasonId] = useState("current");
+  const archivedAdminSeason = !isCurrentSeasonId(adminSeasonId)
+    ? (state.seasonHistory || []).find(s => String(s.id) === String(adminSeasonId))
+    : null;
+  const adminSeasonScope = {
+    seasonId: adminSeasonId,
+    matches: archivedAdminSeason ? (archivedAdminSeason.matches || []) : (state.matches || []),
+    votes: archivedAdminSeason ? (archivedAdminSeason.votes || {}) : (state.votes || {}),
+    matchStats: archivedAdminSeason ? (archivedAdminSeason.matchStats || {}) : (state.matchStats || {}),
+    revealed: archivedAdminSeason ? (archivedAdminSeason.revealed || {}) : (state.revealed || {}),
+    isArchived: !!archivedAdminSeason,
+    label: archivedAdminSeason ? archivedAdminSeason.label : "Nuværende sæson",
+  };
+
+  useEffect(() => {
+    // Hvis den valgte arkiverede sæson slettes, fald tilbage til nuværende.
+    if (!isCurrentSeasonId(adminSeasonId) && !archivedAdminSeason) {
+      setAdminSeasonId("current");
+      setStatsMatchId(null);
+    }
+  }, [adminSeasonId, archivedAdminSeason, setStatsMatchId]);
 
   useEffect(() => {
     const token = getAdminToken();
@@ -993,31 +1057,56 @@ function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatc
         <button title="Log ud af admin" style={{ ...S.btn("secondary", false), fontSize: "11px" }} onClick={handleLogout}>Log ud</button>
       </div>
       {onSaveError && <div style={S.err}>{onSaveError}</div>}
+      {(state.seasonHistory || []).length > 0 && (
+        <div style={{ marginBottom: "14px" }}>
+          <label style={S.label}>Sæson der redigeres</label>
+          <select
+            style={{ ...S.input, marginBottom: 0 }}
+            value={adminSeasonId}
+            onChange={e => {
+              setAdminSeasonId(e.target.value);
+              setStatsMatchId(null);
+            }}
+          >
+            <option value="current">Nuværende sæson</option>
+            {[...(state.seasonHistory || [])].reverse().map(s => (
+              <option key={s.id} value={s.id}>{s.label}</option>
+            ))}
+          </select>
+          {adminSeasonScope.isArchived && (
+            <div style={{ fontSize: "12px", color: C.gold, marginTop: "8px", lineHeight: 1.45 }}>
+              Du redigerer arkivet <strong style={{ color: C.text }}>{adminSeasonScope.label}</strong>. Ændringer gemmes i den sæson og påvirker ikke nuværende (Efterår).
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ display: "flex", gap: "5px", marginBottom: "18px", borderBottom: `1px solid ${C.border}`, paddingBottom: "14px", flexWrap: "wrap" }}>
         {tabs.map(t => (
           <button key={t.id} title={t.title} onClick={() => setTab(t.id)} style={{ background: tab === t.id ? "rgba(34,197,94,0.12)" : "transparent", color: tab === t.id ? "#4ade80" : C.muted, border: `1px solid ${tab === t.id ? "rgba(34,197,94,0.35)" : "transparent"}`, borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontFamily: F.body, fontSize: "12px", fontWeight: 700, letterSpacing: "0.2px" }}>{t.label}</button>
         ))}
       </div>
 
-      {tab === "matches" && <MatchesTab state={state} dispatch={dispatch} />}
-      {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} selMatch={statsMatchId} setSelMatch={setStatsMatchId} />}
+      {tab === "matches" && <MatchesTab state={state} dispatch={dispatch} seasonScope={adminSeasonScope} />}
+      {tab === "stats"   && <StatsTab   state={state} dispatch={dispatch} selMatch={statsMatchId} setSelMatch={setStatsMatchId} seasonScope={adminSeasonScope} />}
       {tab === "squad"   && <SquadTab   state={state} dispatch={dispatch} />}
       {tab === "laundry" && <LaundryTab state={state} dispatch={dispatch} matchId={laundryMatchId} setMatchId={setLaundryMatchId} />}
       {tab === "backup"  && <BackupTab  state={state} dispatch={dispatch} />}
 
       <div style={{ marginTop: "22px", paddingTop: "14px", borderTop: `1px solid ${C.border}` }}>
-        {!resettingAll ? (
-          <button style={{ ...S.btn("secondary", false), fontSize: "11px", color: C.muted }} onClick={() => setResettingAll(true)}>Nulstil alt data</button>
-        ) : (
-          <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px" }}>
-            <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Nulstiller kampprogram, stemmer og statistik. Den nuværende sæson arkiveres automatisk (se Statistik/Rangliste).</div>
-            <label style={S.label}>Navn på sæsonen der afsluttes</label>
-            <input style={S.input} value={resetLabel} onChange={e => setResetLabel(e.target.value)} />
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button style={{ ...S.btn("danger", false) }} onClick={() => { dispatch({ type: "RESET", label: resetLabel }); setResettingAll(false); }}>Ja, nulstil alt</button>
-              <button style={{ ...S.btn("secondary", false) }} onClick={() => setResettingAll(false)}>Fortryd</button>
+        {!adminSeasonScope.isArchived && (
+          !resettingAll ? (
+            <button style={{ ...S.btn("secondary", false), fontSize: "11px", color: C.muted }} onClick={() => setResettingAll(true)}>Nulstil alt data</button>
+          ) : (
+            <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px" }}>
+              <div style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}>Nulstiller kampprogram, stemmer og statistik. Den nuværende sæson arkiveres automatisk (se Statistik/Rangliste).</div>
+              <label style={S.label}>Navn på sæsonen der afsluttes</label>
+              <input style={S.input} value={resetLabel} onChange={e => setResetLabel(e.target.value)} />
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button style={{ ...S.btn("danger", false) }} onClick={() => { dispatch({ type: "RESET", label: resetLabel }); setResettingAll(false); }}>Ja, nulstil alt</button>
+                <button style={{ ...S.btn("secondary", false) }} onClick={() => setResettingAll(false)}>Fortryd</button>
+              </div>
             </div>
-          </div>
+          )
         )}
       </div>
     </div>
@@ -1025,10 +1114,16 @@ function AdminView({ state, dispatch, statsMatchId, setStatsMatchId, laundryMatc
 }
 
 // ---- MATCHES TAB ----
-function MatchesTab({ state, dispatch }) {
+function MatchesTab({ state, dispatch, seasonScope }) {
   const [dbuOpen, setDbuOpen] = useState(false);
   const [expandedVotes, setExpandedVotes] = useState(() => new Set());
   const [expandedMore, setExpandedMore] = useState(() => new Set());
+  const isArchived = !!seasonScope?.isArchived;
+  const seasonId = seasonScope?.seasonId || "current";
+  const matches = seasonScope?.matches || state.matches || [];
+  const votes = seasonScope?.votes || state.votes || {};
+  const matchStats = seasonScope?.matchStats || state.matchStats || {};
+  const revealed = seasonScope?.revealed || state.revealed || {};
 
   function toggleVotes(id) {
     setExpandedVotes(prev => {
@@ -1048,31 +1143,41 @@ function MatchesTab({ state, dispatch }) {
 
   return (
     <div>
-      <div style={{ border: `1px solid ${C.border}`, borderRadius: "9px", marginBottom: "16px", overflow: "hidden" }}>
-        <button
-          title="Hent kampprogrammet fra DBU's hjemmeside, eller opdatér det eksisterende"
-          onClick={() => setDbuOpen(o => !o)}
-          style={{ width: "100%", textAlign: "left", background: C.bg, border: "none", cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", color: C.text, fontSize: "13px", fontWeight: 600 }}
-        >
-          <span>⚽ Hent/opdatér kampprogram fra DBU</span>
-          <span style={{ color: C.muted, fontSize: "12px" }}>{dbuOpen ? "▲ Skjul" : "▼ Vis"}</span>
-        </button>
-        {dbuOpen && (
-          <div style={{ padding: "14px", borderTop: `1px solid ${C.border}` }}>
-            <DbuImportTab state={state} dispatch={dispatch} />
-          </div>
-        )}
-      </div>
-
-      <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}>Åbn afstemning for én kamp ad gangen. Du kan nulstille stemmer uden at miste statistik.</div>
-      {state.matches.length === 0 && (
-        <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Brug boksen ovenfor til at hente det fra DBU.</div>
+      {!isArchived && (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: "9px", marginBottom: "16px", overflow: "hidden" }}>
+          <button
+            title="Hent kampprogrammet fra DBU's hjemmeside, eller opdatér det eksisterende"
+            onClick={() => setDbuOpen(o => !o)}
+            style={{ width: "100%", textAlign: "left", background: C.bg, border: "none", cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", color: C.text, fontSize: "13px", fontWeight: 600 }}
+          >
+            <span>⚽ Hent/opdatér kampprogram fra DBU</span>
+            <span style={{ color: C.muted, fontSize: "12px" }}>{dbuOpen ? "▲ Skjul" : "▼ Vis"}</span>
+          </button>
+          {dbuOpen && (
+            <div style={{ padding: "14px", borderTop: `1px solid ${C.border}` }}>
+              <DbuImportTab state={state} dispatch={dispatch} />
+            </div>
+          )}
+        </div>
       )}
-      {state.matches.map(m => {
-        const isOpen = state.openMatchId === m.id;
-        const isRevealed = state.revealed[m.id];
-        const totalVotes = Object.values(state.votes[m.id] || {}).reduce((a, b) => a + b.count, 0);
-        const hasStats = (state.matchStats[m.id]?.players?.length || 0) > 0;
+
+      <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}>
+        {isArchived
+          ? "Arkiveret sæson – du kan rette/flette stemmer. Afstemning kan ikke åbnes igen her."
+          : "Åbn afstemning for én kamp ad gangen. Du kan nulstille stemmer uden at miste statistik."}
+      </div>
+      {matches.length === 0 && (
+        <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>
+          {isArchived ? "Ingen kampe i denne arkiverede sæson." : "Intet kampprogram endnu. Brug boksen ovenfor til at hente det fra DBU."}
+        </div>
+      )}
+      {matches.map(m => {
+        const isOpen = !isArchived && state.openMatchId === m.id;
+        const isRevealed = !!getMatchEntry(revealed, m.id);
+        const matchVotes = getMatchEntry(votes, m.id) || {};
+        const totalVotes = Object.values(matchVotes).reduce((a, b) => a + (b.count || 0), 0);
+        const stats = getMatchEntry(matchStats, m.id);
+        const hasStats = (stats?.players?.length || 0) > 0;
         const votesExpanded = expandedVotes.has(m.id);
         const moreExpanded = expandedMore.has(m.id);
         return (
@@ -1083,7 +1188,7 @@ function MatchesTab({ state, dispatch }) {
                 <div style={{ color: C.muted, fontSize: "11px", marginTop: "2px" }}>{fmtDate(m.date)} · {m.time} · {totalVotes} stemme{totalVotes !== 1 ? "r" : ""}{hasStats ? " · stat ✓" : ""}</div>
               </div>
               <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
-                {!isOpen && !isRevealed && (
+                {!isArchived && !isOpen && !isRevealed && (
                   <button
                     title={state.openMatchId ? "Luk den åbne afstemning først" : "Åbn afstemning for denne kamp – spillerne kan nu stemme"}
                     style={{ ...S.btn("primary", false), opacity: state.openMatchId ? 0.45 : 1, cursor: state.openMatchId ? "not-allowed" : "pointer" }}
@@ -1091,10 +1196,10 @@ function MatchesTab({ state, dispatch }) {
                     onClick={() => dispatch({ type: "OPEN_MATCH", matchId: m.id })}
                   >Åbn</button>
                 )}
-                {isOpen && <button title="Lukker afstemningen og afslører kampens spiller" style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
-                {isRevealed && (
+                {!isArchived && isOpen && <button title="Lukker afstemningen og afslører kampens spiller" style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
+                {(isRevealed || isArchived) && (
                   <span style={{ fontSize: "11px", color: "#4ade80" }}>
-                    ✓ Afsluttet{state.matchStats[m.id]?.motmName ? ` · ⭐ ${state.matchStats[m.id].motmName}` : ""}
+                    ✓ Afsluttet{stats?.motmName ? ` · ⭐ ${stats.motmName}` : ""}
                   </span>
                 )}
                 <button
@@ -1104,18 +1209,22 @@ function MatchesTab({ state, dispatch }) {
                   style={{ ...S.btn("secondary", false), fontSize: "11px" }}
                 >{moreExpanded ? "▲ Skjul" : "⋯ Mere"}</button>
               </div>
-              {moreExpanded && (
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "10px", paddingTop: "10px", borderTop: `1px solid ${C.border}` }}>
-                  {totalVotes > 0 && (
-                    <button title="Vis/skjul stemmefordelingen for denne kamp" onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
-                  )}
-                  <ConfirmButton label="Slet kun stemmer" title="Sletter kun stemmerne for denne kamp – statistik bevares" style={{ ...S.btn("warn", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_VOTES", matchId: m.id })} />
-                  <ConfirmButton label="Nulstil hele kampen" confirmLabel="Ja, nulstil kampen" title="Sletter stemmer, statistik og resultat for hele kampen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
-                </div>
-              )}
             </div>
-            {votesExpanded && <MatchVotesBreakdown state={state} dispatch={dispatch} matchId={m.id} />}
-            {isOpen && <AdminVoteBox state={state} dispatch={dispatch} matchId={m.id} />}
+            {moreExpanded && (
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "10px", paddingTop: "10px", borderTop: `1px solid ${C.border}` }}>
+                {totalVotes > 0 && (
+                  <button title="Vis/skjul stemmefordelingen for denne kamp" onClick={() => toggleVotes(m.id)} style={{ ...S.btn("secondary", false), fontSize: "11px" }}>{votesExpanded ? "▲ Skjul stemmer" : "▼ Se stemmer"}</button>
+                )}
+                {!isArchived && (
+                  <>
+                    <ConfirmButton label="Slet kun stemmer" title="Sletter kun stemmerne for denne kamp – statistik bevares" style={{ ...S.btn("warn", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_VOTES", matchId: m.id })} />
+                    <ConfirmButton label="Nulstil hele kampen" confirmLabel="Ja, nulstil kampen" title="Sletter stemmer, statistik og resultat for hele kampen" style={{ ...S.btn("danger", false), fontSize: "11px" }} onConfirm={() => dispatch({ type: "RESET_MATCH", matchId: m.id })} />
+                  </>
+                )}
+              </div>
+            )}
+            {votesExpanded && <MatchVotesBreakdown state={state} dispatch={dispatch} matchId={m.id} seasonId={seasonId} votesOverride={votes} />}
+            {!isArchived && isOpen && <AdminVoteBox state={state} dispatch={dispatch} matchId={m.id} />}
           </div>
         );
       })}
@@ -1163,7 +1272,7 @@ function AdminVoteBox({ state, dispatch, matchId }) {
 }
 
 // ---- STATS TAB ----
-function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
+function StatsTab({ state, dispatch, selMatch, setSelMatch, seasonScope }) {
   const [form, setForm] = useState({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 });
   const [editingKey, setEditingKey] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -1177,9 +1286,14 @@ function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
   const [suggestion, setSuggestion] = useState(null); // [{minute, scorer, assist, side}]
   const [applyMsg, setApplyMsg] = useState(null);
 
+  const isArchived = !!seasonScope?.isArchived;
+  const seasonId = seasonScope?.seasonId || "current";
+  const matches = seasonScope?.matches || state.matches || [];
+  const matchStats = seasonScope?.matchStats || state.matchStats || {};
+
   // Fald tilbage til første kamp, hvis intet er valgt endnu (fx allerførste besøg i fanen).
-  const activeMatch = selMatch ?? state.matches[0]?.id;
-  const matchData = state.matchStats[activeMatch] || { players: [] };
+  const activeMatch = selMatch ?? matches[0]?.id;
+  const matchData = getMatchEntry(matchStats, activeMatch) || { players: [] };
   const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
 
   function startEdit(p) { setForm({ name: p.name, goals: p.goals, assists: p.assists, yellowCards: p.yellowCards, redCards: p.redCards }); setEditingKey(p.name.toLowerCase()); setErr(""); }
@@ -1187,14 +1301,14 @@ function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
     if (!form.name.trim()) { setErr("Angiv spillernavn."); return; }
     const player = { name: form.name.trim(), goals: +form.goals, assists: +form.assists, yellowCards: +form.yellowCards, redCards: +form.redCards };
     if (editingKey) {
-      dispatch({ type: "RENAME_AND_UPSERT_PLAYER", matchId: activeMatch, oldKey: editingKey, player });
+      dispatch({ type: "RENAME_AND_UPSERT_PLAYER", matchId: activeMatch, oldKey: editingKey, player, seasonId });
     } else {
-      dispatch({ type: "UPSERT_PLAYER", matchId: activeMatch, player });
+      dispatch({ type: "UPSERT_PLAYER", matchId: activeMatch, player, seasonId });
     }
     setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setEditingKey(null);
     setSaved(true); setTimeout(() => setSaved(false), 2000);
   }
-  function handleDelete(playerKey) { dispatch({ type: "DELETE_PLAYER", matchId: activeMatch, playerKey }); }
+  function handleDelete(playerKey) { dispatch({ type: "DELETE_PLAYER", matchId: activeMatch, playerKey, seasonId }); }
 
   async function handleFetchSuggestion() {
     setFetchErr(""); setRawFetch(null); setSuggestion(null); setApplyMsg(null); setSide(null);
@@ -1210,7 +1324,7 @@ function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
       if (!res.ok) throw new Error(data.error || "Kunne ikke hente kampinfo.");
       setRawFetch(data);
       // Gæt hvilket hold der er "vores" ved at se om holdnavnet matcher noget i spillertruppen/kamplisten.
-      const match = state.matches.find(m => m.id === activeMatch);
+      const match = matches.find(m => String(m.id) === String(activeMatch));
       const guessHome = match && isHome(match, state.teamName);
       setSide(guessHome ? "home" : "away");
     } catch (e) {
@@ -1241,10 +1355,10 @@ function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
       if (g.assist) { tally[g.assist] = tally[g.assist] || { name: g.assist, goals: 0, assists: 0 }; tally[g.assist].assists += 1; }
     });
     const players = Object.values(tally).map(player => {
-      const existing = matchData.players.find(p => p.name.toLowerCase() === player.name.toLowerCase());
+      const existing = (matchData.players || []).find(p => p.name.toLowerCase() === player.name.toLowerCase());
       return { name: player.name, goals: player.goals, assists: player.assists, yellowCards: existing?.yellowCards || 0, redCards: existing?.redCards || 0 };
     });
-    dispatch({ type: "UPSERT_PLAYERS", matchId: activeMatch, players });
+    dispatch({ type: "UPSERT_PLAYERS", matchId: activeMatch, players, seasonId });
     setApplyMsg({ type: "ok", text: `${players.length} spillere opdateret ud fra forslaget. Tjek tabellen nedenfor og ret evt. gule/røde kort manuelt.` });
     setRawFetch(null); setSuggestion(null); setSide(null);
     setDbuUrl("");
@@ -1256,15 +1370,20 @@ function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
       <input style={{ ...S.input, marginBottom: 0, textAlign: "center" }} type="number" min="0" max="20" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
     </div>
   );
-  if (!state.matches.length) {
-    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>Intet kampprogram endnu. Gå til fanen "Kampprogram" for at hente det fra DBU.</div></div>;
+  if (!matches.length) {
+    return <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>{isArchived ? "Ingen kampe i denne arkiverede sæson." : 'Intet kampprogram endnu. Gå til fanen "Kampprogram" for at hente det fra DBU.'}</div></div>;
   }
 
   return (
     <div>
+      {isArchived && (
+        <div style={{ fontSize: "12px", color: C.gold, marginBottom: "12px", lineHeight: 1.45 }}>
+          Redigerer statistik for <strong style={{ color: C.text }}>{seasonScope.label}</strong>.
+        </div>
+      )}
       <label style={S.label}>Kamp</label>
-      <select style={S.input} value={selMatch ?? state.matches[0]?.id} onChange={e => { setSelMatch(+e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setSuggestion(null); }}>
-        {state.matches.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>)}
+      <select style={S.input} value={selMatch ?? matches[0]?.id} onChange={e => { setSelMatch(e.target.value); setEditingKey(null); setForm({ name: "", goals: 0, assists: 0, yellowCards: 0, redCards: 0 }); setSuggestion(null); }}>
+        {matches.map(m => <option key={m.id} value={m.id}>{fmtDate(m.date)} – {opponent(m, state.teamName)}</option>)}
       </select>
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px", marginBottom: "16px" }}>
@@ -1332,7 +1451,7 @@ function StatsTab({ state, dispatch, selMatch, setSelMatch }) {
         </div>
       </div>
 
-      {matchData.players.length > 0 && (
+      {(matchData.players || []).length > 0 && (
         <div>
           <div style={{ fontSize: "11px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>Registrerede spillere</div>
           <div style={{ overflowX: "auto" }}>
@@ -1745,8 +1864,8 @@ function DbuImportTab({ state, dispatch }) {
 
 
 // Genbrugelig stemmefordeling for én kamp (bruges inline i Kampe-fanen)
-function MatchVotesBreakdown({ state, dispatch, matchId }) {
-  const matchVotes = state.votes[matchId] || {};
+function MatchVotesBreakdown({ state, dispatch, matchId, seasonId = "current", votesOverride = null }) {
+  const matchVotes = getMatchEntry(votesOverride || state.votes, matchId) || {};
   const total = Object.values(matchVotes).reduce((a, b) => a + b.count, 0);
   const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
   const [editingKey, setEditingKey] = useState(null);
@@ -1759,7 +1878,7 @@ function MatchVotesBreakdown({ state, dispatch, matchId }) {
   }
   function saveEdit() {
     if (!editValue.trim()) return;
-    dispatch({ type: "EDIT_VOTE", matchId, oldKey: editingKey, newName: editValue.trim() });
+    dispatch({ type: "EDIT_VOTE", matchId, oldKey: editingKey, newName: editValue.trim(), seasonId });
     setEditingKey(null);
   }
 
@@ -2202,18 +2321,35 @@ function BackupTab({ state, dispatch }) {
         <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
           <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Éngangs · Adskil Forår 2026</div>
           <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.55 }}>
-            Lægger MotM-stemmer for Forår 2026 i en <strong style={{ color: C.text, fontWeight: 600 }}>arkiveret sæson</strong> og fjerner dem fra nuværende (Efterår),
-            så ranglisten ikke blander de to sæsoner. Kan kun køres én gang.
+            Lægger MotM-stemmer for <strong style={{ color: C.text, fontWeight: 600 }}>kun de 7 Forår 2026-kampe</strong> i et arkiv.
+            <strong style={{ color: C.gold, fontWeight: 700 }}> Efterårssæsonen røres ikke</strong> (stemmer, statistik, trup, vasketøj, kampprogram).
+            Kan kun køres én gang. Stoppes automatisk hvis Efterår ville blive ændret.
           </div>
           <ConfirmButton
             label="Arkivér Forår 2026-stemmer"
-            confirmLabel="Ja, adskil sæsonerne"
-            title="Flytter forårsstemmer til arkiv og renser nuværende sæson"
+            confirmLabel="Ja – kun forår, rør ikke efterår"
+            title="Flytter kun de 7 forårs-kampnr til arkiv. Efterår forbliver uændret."
             confirmTone="primary"
             style={{ ...S.btn("primary", false) }}
             onConfirm={() => {
-              dispatch({ type: "SEED_SPRING_2026_MOTM" });
-              setMsg({ type: "ok", text: "Forår 2026 er arkiveret. Vælg sæsonen under Rangliste for at se forårsstatistik." });
+              try {
+                // Kør først lokalt – hvis Efterårs-guard fejler, dispatch’es intet.
+                const preview = applySpring2026MotmSeed(state);
+                if (!preview.applied) {
+                  setMsg({ type: "err", text: "Forår 2026 er allerede arkiveret." });
+                  return;
+                }
+                dispatch({ type: "SEED_SPRING_2026_MOTM" });
+                setMsg({
+                  type: "ok",
+                  text: "Forår 2026 er arkiveret. Efterår er uændret. Vælg Forår 2026 under Rangliste/Admin for at se eller redigere den.",
+                });
+              } catch (e) {
+                setMsg({
+                  type: "err",
+                  text: e?.message || "Arkivering afbrudt – Efterårsdata er ikke ændret.",
+                });
+              }
             }}
           />
         </div>
