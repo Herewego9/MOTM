@@ -6,6 +6,7 @@ import {
   getMotmWinners,
   needsSpring2026ArchiveAction,
   resolveMotm,
+  springArchiveMissingMatchIds,
 } from "./spring2026MotmSeed.js";
 
 // ==== Offentlige klient-nøgler (kun læsning efter RLS) ====
@@ -2317,43 +2318,56 @@ function BackupTab({ state, dispatch }) {
         <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>CSV-filer åbnes direkte i Excel, Numbers eller Google Sheets.</div>
       </div>
 
-      {needsSpring2026ArchiveAction(state) && (
-        <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
-          <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Éngangs · Adskil Forår 2026</div>
-          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.55 }}>
-            Lægger MotM-stemmer for <strong style={{ color: C.text, fontWeight: 600 }}>kun de 7 Forår 2026-kampe</strong> i et arkiv.
-            <strong style={{ color: C.gold, fontWeight: 700 }}> Efterårssæsonen røres ikke</strong> (stemmer, statistik, trup, vasketøj, kampprogram).
-            Kan kun køres én gang. Stoppes automatisk hvis Efterår ville blive ændret.
-          </div>
-          <ConfirmButton
-            label="Arkivér Forår 2026-stemmer"
-            confirmLabel="Ja – kun forår, rør ikke efterår"
-            title="Flytter kun de 7 forårs-kampnr til arkiv. Efterår forbliver uændret."
-            confirmTone="primary"
-            style={{ ...S.btn("primary", false) }}
-            onConfirm={() => {
-              try {
-                // Kør først lokalt – hvis Efterårs-guard fejler, dispatch’es intet.
-                const preview = applySpring2026MotmSeed(state);
-                if (!preview.applied) {
-                  setMsg({ type: "err", text: "Forår 2026 er allerede arkiveret." });
-                  return;
+      {needsSpring2026ArchiveAction(state) && (() => {
+        const missingIds = springArchiveMissingMatchIds(state);
+        const onlySync = !!state[SPRING_2026_ARCHIVE_FLAG] && missingIds.length > 0;
+        return (
+          <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
+            <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>
+              {onlySync ? "Opdatér Forår 2026-arkiv" : "Éngangs · Adskil Forår 2026"}
+            </div>
+            <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.55 }}>
+              {onlySync ? (
+                <>Tilføjer manglende forårs-kamp(e) til arkivet (fx Christiansbjerg 16-05). <strong style={{ color: C.gold, fontWeight: 700 }}>Efterår røres ikke.</strong></>
+              ) : (
+                <>
+                  Lægger MotM-stemmer og forårs-kampe i et arkiv.
+                  <strong style={{ color: C.gold, fontWeight: 700 }}> Efterårssæsonen røres ikke</strong> (stemmer, statistik, trup, vasketøj, kampprogram).
+                  Stoppes automatisk hvis Efterår ville blive ændret.
+                </>
+              )}
+            </div>
+            <ConfirmButton
+              label={onlySync ? "Tilføj manglende forårs-kampe" : "Arkivér Forår 2026-stemmer"}
+              confirmLabel="Ja – kun forår, rør ikke efterår"
+              title="Opdaterer kun Forår 2026-arkivet. Efterår forbliver uændret."
+              confirmTone="primary"
+              style={{ ...S.btn("primary", false) }}
+              onConfirm={() => {
+                try {
+                  const preview = applySpring2026MotmSeed(state);
+                  if (!preview.applied) {
+                    setMsg({ type: "err", text: "Forår 2026-arkivet er allerede komplet." });
+                    return;
+                  }
+                  dispatch({ type: "SEED_SPRING_2026_MOTM" });
+                  setMsg({
+                    type: "ok",
+                    text: onlySync
+                      ? "Manglende forårs-kampe er tilføjet. Efterår er uændret."
+                      : "Forår 2026 er arkiveret. Efterår er uændret. Vælg Forår 2026 under Rangliste/Admin for at se eller redigere den.",
+                  });
+                } catch (e) {
+                  setMsg({
+                    type: "err",
+                    text: e?.message || "Arkivering afbrudt – Efterårsdata er ikke ændret.",
+                  });
                 }
-                dispatch({ type: "SEED_SPRING_2026_MOTM" });
-                setMsg({
-                  type: "ok",
-                  text: "Forår 2026 er arkiveret. Efterår er uændret. Vælg Forår 2026 under Rangliste/Admin for at se eller redigere den.",
-                });
-              } catch (e) {
-                setMsg({
-                  type: "err",
-                  text: e?.message || "Arkivering afbrudt – Efterårsdata er ikke ændret.",
-                });
-              }
-            }}
-          />
-        </div>
-      )}
+              }}
+            />
+          </div>
+        );
+      })()}
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Arkiverede sæsoner ({(state.seasonHistory || []).length}/2)</div>
