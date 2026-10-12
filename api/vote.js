@@ -1,9 +1,26 @@
 import { loadShared, saveShared } from "./_lib/sharedStore.js";
 import { toClientError } from "./_lib/errors.js";
 
+function resolveMotm(matchVotes) {
+  const entries = Object.entries(matchVotes || {}).sort((a, b) => b[1].count - a[1].count);
+  if (!entries.length) {
+    return { motmKey: null, motmName: null, motmKeys: [], motmNames: [] };
+  }
+  const top = entries[0][1].count;
+  const winners = entries.filter(([, v]) => v.count === top);
+  const motmKeys = winners.map(([k]) => k);
+  const motmNames = winners.map(([, v]) => v.name);
+  return {
+    motmKey: motmKeys[0] || null,
+    motmName: motmNames.length ? motmNames.join(" / ") : null,
+    motmKeys,
+    motmNames,
+  };
+}
+
 function applyVote(shared, matchId, playerName) {
   const key = playerName.toLowerCase();
-  const matchVotes = shared.votes?.[matchId] || {};
+  const matchVotes = { ...(shared.votes?.[matchId] || {}) };
   if (matchVotes[key]) {
     matchVotes[key] = { ...matchVotes[key], count: matchVotes[key].count + 1 };
   } else {
@@ -12,14 +29,13 @@ function applyVote(shared, matchId, playerName) {
   const votes = { ...(shared.votes || {}), [matchId]: matchVotes };
 
   // Hold MOTM-preview opdateret mens afstemningen er åben (samme logik som klient-reduceren).
-  const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
+  const motm = resolveMotm(matchVotes);
   const prevMatchData = shared.matchStats?.[matchId] || { players: [] };
   const matchStats = {
     ...(shared.matchStats || {}),
     [matchId]: {
       ...prevMatchData,
-      motmKey: sorted[0]?.[0] || null,
-      motmName: sorted[0]?.[1]?.name || null,
+      ...motm,
     },
   };
 

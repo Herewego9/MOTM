@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
+import {
+  SPRING_2026_SEED_FLAG,
+  applySpring2026MotmSeed,
+  getMotmWinners,
+  resolveMotm,
+} from "./spring2026MotmSeed.js";
 
 // ==== Offentlige klient-nøgler (kun læsning efter RLS) ====
 // Admin-adgangskode og service-role ligger KUN på serveren (ADMIN_PASSWORD,
@@ -104,6 +110,7 @@ const INIT_SHARED = {
   competition: null, // Række/turnering, sættes automatisk fra DBU
   // DBU API-nøgle gemmes IKKE her (kun pool/team-id). Nøglen ligger i sessionStorage på admin-enheden.
   dbuPoolId: "", dbuTeamId: "",
+  [SPRING_2026_SEED_FLAG]: false, // Éngangs-seed af MotM-stemmer for Forår 2026
 };
 const INIT_PERSONAL = {
   votedMatches: {}, // { matchId: "navn på den spiller jeg stemte på" }
@@ -117,13 +124,18 @@ const WEIGHTS = { motm: 5, goal: 3, assist: 2, yellowCard: -1, redCard: -3 };
 // en anden spiller scorer. Kort trækkes stadig fra ovenpå, uden loft (straf skal virke fuldt ud).
 const MAX_GOAL_ASSIST_POINTS_PER_MATCH = WEIGHTS.motm - 1;
 
-function deriveSeasonStats(matchStats) {
+function emptySeasonPlayer(name) {
+  return { name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, totalVotes: 0, score: 0 };
+}
+
+function deriveSeasonStats(matchStats, votes = null) {
   const out = {};
-  Object.values(matchStats).forEach(({ players, motmKey, motmName }) => {
+  Object.values(matchStats || {}).forEach((matchStat) => {
+    const { players } = matchStat;
     const countedThisMatch = new Set();
     (players || []).forEach(p => {
       const k = p.name.toLowerCase();
-      if (!out[k]) out[k] = { name: p.name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
+      if (!out[k]) out[k] = emptySeasonPlayer(p.name);
       // "Med stats" / matchesPlayed = kampe med registreret statistik (mål/assist/kort ELLER kampens spiller).
       out[k].matchesPlayed += 1;
       countedThisMatch.add(k);
@@ -137,19 +149,55 @@ function deriveSeasonStats(matchStats) {
       const cardPenalty = (p.yellowCards || 0) * WEIGHTS.yellowCard + (p.redCards || 0) * WEIGHTS.redCard;
       out[k].score += cappedGoalAssist + cardPenalty;
     });
-    if (motmKey) {
-      if (!out[motmKey]) out[motmKey] = { name: motmName || motmKey, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, score: 0 };
-      // MOTM-only: tæl også kampen i "Med stats" (uden at dobbelt-tælle hvis spilleren allerede har en stats-række).
-      if (!countedThisMatch.has(motmKey)) out[motmKey].matchesPlayed += 1;
-      out[motmKey].motmWins += 1;
-      out[motmKey].score += WEIGHTS.motm;
-    }
+    // Understøtter co-vindere (motmKeys) ved lige stemmetal – bagudkompatibelt med motmKey alene.
+    getMotmWinners(matchStat).forEach(({ key, name }) => {
+      if (!out[key]) out[key] = emptySeasonPlayer(name || key);
+      if (!countedThisMatch.has(key)) {
+        out[key].matchesPlayed += 1;
+        countedThisMatch.add(key);
+      }
+      out[key].motmWins += 1;
+      out[key].score += WEIGHTS.motm;
+    });
   });
+
+  // Totale MotM-stemmer over sæsonen (Sæsonens spiller).
+  Object.values(votes || {}).forEach((matchVotes) => {
+    Object.entries(matchVotes || {}).forEach(([key, entry]) => {
+      if (!out[key]) out[key] = emptySeasonPlayer(entry.name || key);
+      out[key].totalVotes += entry.count || 0;
+      if (entry.name) out[key].name = entry.name;
+    });
+  });
+
   return out;
 }
 
 function scorePlayer(p) {
   return p.score || 0;
+}
+
+/** Sæsonens spiller = flest stemmer; Sæsonens fighter = flest KS-sejre (nr. 2 hvis samme som spiller). */
+function deriveSeasonAwards(votes, matchStats) {
+  const seasonStats = deriveSeasonStats(matchStats, votes);
+  const players = Object.values(seasonStats);
+  if (!players.length) return { seasonPlayer: null, seasonFighter: null };
+
+  const byVotes = [...players].sort((a, b) =>
+    b.totalVotes - a.totalVotes || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists
+  );
+  const byMotm = [...players].sort((a, b) =>
+    b.motmWins - a.motmWins || b.totalVotes - a.totalVotes || b.goals - a.goals || b.assists - a.assists
+  );
+
+  const seasonPlayer = byVotes[0] && (byVotes[0].totalVotes > 0 || byVotes[0].motmWins > 0)
+    ? byVotes[0]
+    : null;
+  let seasonFighter = byMotm.find(p => p.motmWins > 0) || null;
+  if (seasonPlayer && seasonFighter && seasonPlayer.name.toLowerCase() === seasonFighter.name.toLowerCase()) {
+    seasonFighter = byMotm.find(p => p.name.toLowerCase() !== seasonPlayer.name.toLowerCase() && p.motmWins > 0) || null;
+  }
+  return { seasonPlayer, seasonFighter };
 }
 
 // ---- Designsystem: "Matchday" – banegrøn nat, scoreboard-typografi ----
@@ -310,14 +358,19 @@ function archiveCurrentSeason(state, label) {
 //
 // Spillere der ikke længere er i truppen ignoreres i rundetællingen, så gamle
 // registreringer ikke "forurener" den aktuelle runde.
-function computeLaundryRound(squadNames, laundryHistory, excludeName) {
+function computeLaundryRound(squadNames, laundryHistory, excludeNames) {
   if (!squadNames || !squadNames.length) {
     return { pool: [], doneThisRound: [], eligibleSquad: [] };
   }
   const squadSet = new Set(squadNames.map(n => n.toLowerCase()));
-  // Kampens spiller for den valgte kamp må ikke selv kunne trækkes til vasketøj den gang.
-  const eligibleSquad = excludeName
-    ? squadNames.filter(n => n.toLowerCase() !== excludeName.toLowerCase())
+  // Kampens spiller(e) for den valgte kamp må ikke selv kunne trækkes til vasketøj den gang.
+  const excluded = new Set(
+    (Array.isArray(excludeNames) ? excludeNames : excludeNames ? [excludeNames] : [])
+      .filter(Boolean)
+      .map(n => String(n).toLowerCase())
+  );
+  const eligibleSquad = excluded.size
+    ? squadNames.filter(n => !excluded.has(n.toLowerCase()))
     : [...squadNames];
   if (!eligibleSquad.length) {
     return { pool: [], doneThisRound: [], eligibleSquad: [] };
@@ -398,9 +451,9 @@ function reducer(state, action) {
       // stemmer – genberegn derfor vinderen, så statistikken forbliver korrekt.
       let matchStats = state.matchStats;
       if (state.revealed[matchId]) {
-        const sorted = Object.entries(next).sort((a, b) => b[1].count - a[1].count);
+        const motm = resolveMotm(next);
         const prevMatchData = matchStats[matchId] || { players: [] };
-        matchStats = { ...matchStats, [matchId]: { ...prevMatchData, motmKey: sorted[0]?.[0] || null, motmName: sorted[0]?.[1]?.name || null } };
+        matchStats = { ...matchStats, [matchId]: { ...prevMatchData, ...motm } };
       }
       return { ...state, votes: { ...state.votes, [matchId]: next }, matchStats };
     }
@@ -410,11 +463,9 @@ function reducer(state, action) {
       return { ...state, openMatchId: action.matchId };
     case "CLOSE_MATCH": {
       const matchVotes = state.votes[action.matchId] || {};
-      const sorted = Object.entries(matchVotes).sort((a, b) => b[1].count - a[1].count);
-      const motmKey = sorted.length > 0 ? sorted[0][0] : null;
-      const motmName = sorted.length > 0 ? sorted[0][1].name : null;
+      const motm = resolveMotm(matchVotes);
       const prevMatchData = state.matchStats[action.matchId] || { players: [] };
-      return { ...state, openMatchId: null, revealed: { ...state.revealed, [action.matchId]: true }, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey, motmName } } };
+      return { ...state, openMatchId: null, revealed: { ...state.revealed, [action.matchId]: true }, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, ...motm } } };
     }
     case "RESET_VOTES": {
       const newVotes = { ...state.votes };
@@ -422,7 +473,11 @@ function reducer(state, action) {
       const newVoted = { ...state.votedMatches };
       delete newVoted[action.matchId]; // denne enhed må gerne stemme igen
       const prevMatchData = state.matchStats[action.matchId] || { players: [] };
-      return { ...state, openMatchId: state.openMatchId === action.matchId ? null : state.openMatchId, revealed: { ...state.revealed, [action.matchId]: false }, votes: newVotes, votedMatches: newVoted, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey: null, motmName: null } } };
+      return { ...state, openMatchId: state.openMatchId === action.matchId ? null : state.openMatchId, revealed: { ...state.revealed, [action.matchId]: false }, votes: newVotes, votedMatches: newVoted, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, motmKey: null, motmName: null, motmKeys: [], motmNames: [] } } };
+    }
+    case "SEED_SPRING_2026_MOTM": {
+      const { state: next, applied } = applySpring2026MotmSeed(state);
+      return applied ? next : state;
     }
     case "RESET_MATCH": {
       const newVotes = { ...state.votes }; delete newVotes[action.matchId];
@@ -706,11 +761,13 @@ function RankingView({ state }) {
   const [showPoints, setShowPoints] = useState(false);
   const archived = selectedId !== "current" ? (state.seasonHistory || []).find(s => String(s.id) === String(selectedId)) : null;
   const matchStatsSource = archived ? archived.matchStats : state.matchStats;
+  const votesSource = archived ? archived.votes : state.votes;
 
-  const seasonStats = deriveSeasonStats(matchStatsSource);
+  const seasonStats = deriveSeasonStats(matchStatsSource, votesSource);
   const players = Object.values(seasonStats)
     .map(p => ({ ...p, score: scorePlayer(p) }))
     .sort((a, b) => b.score - a.score || b.motmWins - a.motmWins || b.goals - a.goals || b.assists - a.assists);
+  const { seasonPlayer, seasonFighter } = deriveSeasonAwards(votesSource, matchStatsSource);
 
   const medal = i => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
   const maxScore = players[0]?.score || 1;
@@ -723,6 +780,7 @@ function RankingView({ state }) {
     { label: "Gult", key: "yellowCards", emoji: "🟨", title: "Gule kort" },
     { label: "Rødt", key: "redCards", emoji: "🟥", title: "Røde kort" },
     { label: "KS", key: "motmWins", emoji: "⭐", title: "Kampens spiller" },
+    { label: "Stemmer", key: "totalVotes", emoji: "🗳", title: "Totale MotM-stemmer i sæsonen" },
   ];
 
   const tabBtn = (id, label) => (
@@ -748,6 +806,33 @@ function RankingView({ state }) {
         {tabBtn("stats", "Detaljer")}
       </div>
 
+      {(seasonPlayer || seasonFighter) && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "14px" }}>
+          <div style={{ ...S.card, marginTop: 0, padding: "16px", flex: "1 1 160px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: "6px" }}>Sæsonens spiller</div>
+            <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, color: C.gold, letterSpacing: "0.2px" }}>
+              {seasonPlayer ? seasonPlayer.name : "–"}
+            </div>
+            {seasonPlayer && (
+              <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
+                {seasonPlayer.totalVotes} stemme{seasonPlayer.totalVotes !== 1 ? "r" : ""} · {seasonPlayer.motmWins} KS
+              </div>
+            )}
+          </div>
+          <div style={{ ...S.card, marginTop: 0, padding: "16px", flex: "1 1 160px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: "6px" }}>Sæsonens fighter</div>
+            <div style={{ fontFamily: F.display, fontSize: "22px", fontWeight: 800, color: C.blue, letterSpacing: "0.2px" }}>
+              {seasonFighter ? seasonFighter.name : "–"}
+            </div>
+            {seasonFighter && (
+              <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
+                {seasonFighter.motmWins} KS · {seasonFighter.totalVotes} stemme{seasonFighter.totalVotes !== 1 ? "r" : ""}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {!players.length ? (
         <div style={S.card}><div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: "13px" }}>
           {mode === "stats" ? `Ingen statistik ${archived ? "for denne sæson" : "endnu"}.` : "Ranglisten opdateres, når der er registreret statistik."}
@@ -765,7 +850,8 @@ function RankingView({ state }) {
           {showPoints && (
             <div style={{ fontSize: "12px", color: C.muted, marginBottom: "18px", lineHeight: 1.6 }}>
               Point: {WEIGHTS.motm} pr. kampens spiller · {WEIGHTS.goal} pr. mål · {WEIGHTS.assist} pr. assist · {WEIGHTS.yellowCard} pr. gult kort · {WEIGHTS.redCard} pr. rødt kort.<br />
-              Mål/assist kan højst give {MAX_GOAL_ASSIST_POINTS_PER_MATCH} point i én kamp – kampens spiller-titlen giver derfor altid flest point den kamp.
+              Mål/assist kan højst give {MAX_GOAL_ASSIST_POINTS_PER_MATCH} point i én kamp – kampens spiller-titlen giver derfor altid flest point den kamp.<br />
+              Sæsonens spiller = flest MotM-stemmer. Sæsonens fighter = flest KS-sejre (nr. 2 hvis samme person).
             </div>
           )}
           {players.map((p, i) => (
@@ -777,7 +863,7 @@ function RankingView({ state }) {
               <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: F.display, fontWeight: i === 0 ? 700 : 600, fontSize: "17px", letterSpacing: "0.2px", color: i === 0 ? C.gold : C.text }}>{p.name}</div>
                 <div style={{ display: "flex", gap: "10px", fontSize: "11px", color: C.muted, marginTop: "2px" }}>
-                  <span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
+                  <span>🗳 {p.totalVotes || 0}</span><span>⭐ {p.motmWins}</span><span>🥅 {p.goals}</span><span>🎯 {p.assists}</span>{p.yellowCards > 0 && <span>🟨 {p.yellowCards}</span>}{p.redCards > 0 && <span>🟥 {p.redCards}</span>}
                 </div>
                 <div style={{ height: "4px", background: C.border, borderRadius: "2px", marginTop: "6px", overflow: "hidden" }}>
                   <div style={{ height: "100%", width: `${(p.score / maxScore) * 100}%`, background: barColor(i), borderRadius: "2px" }} />
@@ -1739,8 +1825,10 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
   const activeMatchId = matchId === null ? defaultMatchId : matchId;
 
   const squad = [...(state.squadNames || [])].sort((a, b) => a.localeCompare(b, "da"));
-  const matchMotmName = activeMatchId ? (state.matchStats[activeMatchId]?.motmName || null) : null;
-  const round = computeLaundryRound(squad, state.laundryHistory, matchMotmName);
+  const matchMotmNames = activeMatchId
+    ? getMotmWinners(state.matchStats[activeMatchId]).map(w => w.name)
+    : [];
+  const round = computeLaundryRound(squad, state.laundryHistory, matchMotmNames);
   const { pool, doneThisRound, newRound } = round;
   const history = [...(state.laundryHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -1847,9 +1935,9 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
             ? `Ny runde klar · ${remainingCount} spillere i puljen`
             : `${remainingCount} tilbage · ${doneCount} har allerede haft tur denne runde`}
         </div>
-        {matchMotmName && (
+        {matchMotmNames.length > 0 && (
           <div style={{ fontSize: "11px", color: C.gold, marginBottom: "10px" }}>
-            ⭐ {matchMotmName} er kampens spiller og er fritaget for vasketøj denne gang
+            ⭐ {matchMotmNames.join(" / ")} er kampens spiller{matchMotmNames.length > 1 ? "e" : ""} og er fritaget for vasketøj denne gang
           </div>
         )}
         {!newRound && doneThisRound.length > 0 && (
@@ -1905,7 +1993,10 @@ function LaundryTab({ state, dispatch, matchId, setMatchId }) {
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "flex-start" }}>
             <select style={{ ...S.input, marginBottom: 0, flex: "1 1 180px" }} value={manualName} onChange={e => setManualName(e.target.value)}>
               <option value="">— Vælg spiller —</option>
-              {squad.map(n => <option key={n} value={n}>{n}{matchMotmName && n.toLowerCase() === matchMotmName.toLowerCase() ? " (kampens spiller)" : ""}</option>)}
+              {squad.map(n => {
+                const isMotm = matchMotmNames.some(m => m.toLowerCase() === n.toLowerCase());
+                return <option key={n} value={n}>{n}{isMotm ? " (kampens spiller)" : ""}</option>;
+              })}
             </select>
             <ConfirmButton
               label="Registrér"
@@ -2039,9 +2130,9 @@ function BackupTab({ state, dispatch }) {
   }
 
   function exportSeasonCsv() {
-    const seasonStats = deriveSeasonStats(state.matchStats);
+    const seasonStats = deriveSeasonStats(state.matchStats, state.votes);
     const rows = Object.values(seasonStats)
-      .map(p => ({ Spiller: p.name, "Kampe med statistik": p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Point: scorePlayer(p) }))
+      .map(p => ({ Spiller: p.name, "Kampe med statistik": p.matchesPlayed, "Mål": p.goals, Assist: p.assists, "Gule kort": p.yellowCards, "Røde kort": p.redCards, "Kampens spiller": p.motmWins, Stemmer: p.totalVotes || 0, Point: scorePlayer(p) }))
       .sort((a, b) => b.Point - a.Point);
     if (!rows.length) { setMsg({ type: "err", text: "Ingen statistik at eksportere endnu." }); return; }
     downloadBlob(toCsv(rows), `${slugify(state.teamName)}-saesonstatistik.csv`, "text/csv;charset=utf-8;");
@@ -2104,6 +2195,27 @@ function BackupTab({ state, dispatch }) {
         </div>
         <div style={{ fontSize: "11px", color: C.muted, marginTop: "8px" }}>CSV-filer åbnes direkte i Excel, Numbers eller Google Sheets.</div>
       </div>
+
+      {!state[SPRING_2026_SEED_FLAG] && (
+        <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
+          <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Éngangs-seed · Forår 2026</div>
+          <div style={{ fontSize: "12px", color: C.muted, marginBottom: "12px", lineHeight: 1.55 }}>
+            Indlæser MotM-stemmer fra Google Sheet for de 7 forårskampe (DBU-kampnr). Overskriver ikke mål/assist/kort.
+            Kan kun køres én gang.
+          </div>
+          <ConfirmButton
+            label="Indlæs forår 2026-stemmer"
+            confirmLabel="Ja, indlæs stemmer"
+            title="Indlæser historiske MotM-stemmer for Forår 2026"
+            confirmTone="primary"
+            style={{ ...S.btn("primary", false) }}
+            onConfirm={() => {
+              dispatch({ type: "SEED_SPRING_2026_MOTM" });
+              setMsg({ type: "ok", text: "Forår 2026 MotM-stemmer er indlæst i statistikken." });
+            }}
+          />
+        </div>
+      )}
 
       <div style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
         <div style={{ fontSize: "12px", fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" }}>Arkiverede sæsoner ({(state.seasonHistory || []).length}/2)</div>
