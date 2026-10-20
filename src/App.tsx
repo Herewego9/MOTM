@@ -131,45 +131,103 @@ function emptySeasonPlayer(name) {
   return { name, matchesPlayed: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0, motmWins: 0, totalVotes: 0, score: 0 };
 }
 
+/** Korte/sheet-navne → kanonisk nøgle, så stemmer/statistik ikke splittes på samme person. */
+const PLAYER_KEY_ALIASES = {
+  "silas ebling": "silas ebling pedersen",
+  "thomas b": "thomas borup",
+  kruse: "søren kruse-jessen",
+};
+
+const PLAYER_CANONICAL_NAMES = {
+  "silas ebling pedersen": "Silas Ebling Pedersen",
+  "thomas borup": "Thomas Borup",
+  "søren kruse-jessen": "Søren Kruse-Jessen",
+};
+
+function canonicalPlayerKey(key) {
+  const k = String(key || "").toLowerCase().trim();
+  return PLAYER_KEY_ALIASES[k] || k;
+}
+
+function displayPlayerName(key, name) {
+  const canon = canonicalPlayerKey(key);
+  return PLAYER_CANONICAL_NAMES[canon] || name || canon;
+}
+
+function playerHasMatchContribution(p) {
+  return ((p?.goals || 0) + (p?.assists || 0) + (p?.yellowCards || 0) + (p?.redCards || 0)) > 0;
+}
+
+/**
+ * Effektiv KS for en kamp: genberegn fra stemmer når kampen allerede har KS gemt.
+ * Retter gamle uafgjorte (før motmKeys), hvor kun én vinder blev lagret.
+ */
+function effectiveMotm(matchStat, matchVotes) {
+  const stored = getMotmWinners(matchStat);
+  if (stored.length && matchVotes && Object.keys(matchVotes).length > 0) {
+    return resolveMotm(matchVotes);
+  }
+  if (!stored.length) {
+    return { motmKey: null, motmName: null, motmKeys: [], motmNames: [] };
+  }
+  return {
+    motmKey: matchStat.motmKey ?? stored[0].key,
+    motmName: matchStat.motmName ?? stored.map(w => w.name).join(" / "),
+    motmKeys: Array.isArray(matchStat.motmKeys) && matchStat.motmKeys.length
+      ? matchStat.motmKeys
+      : stored.map(w => w.key),
+    motmNames: Array.isArray(matchStat.motmNames) && matchStat.motmNames.length
+      ? matchStat.motmNames
+      : stored.map(w => w.name),
+  };
+}
+
 function deriveSeasonStats(matchStats, votes = null) {
   const out = {};
-  Object.values(matchStats || {}).forEach((matchStat) => {
-    const { players } = matchStat;
+  const ensure = (rawKey, name) => {
+    const k = canonicalPlayerKey(rawKey);
+    if (!out[k]) out[k] = emptySeasonPlayer(displayPlayerName(rawKey, name));
+    else out[k].name = displayPlayerName(rawKey, name || out[k].name);
+    return { key: k, row: out[k] };
+  };
+
+  Object.entries(matchStats || {}).forEach(([matchId, matchStat]) => {
     const countedThisMatch = new Set();
-    (players || []).forEach(p => {
-      const k = p.name.toLowerCase();
-      if (!out[k]) out[k] = emptySeasonPlayer(p.name);
+    (matchStat?.players || []).forEach(p => {
+      // Tomme spiller-rækker (0/0/0/0) tæller ikke som "Med stats".
+      if (!playerHasMatchContribution(p)) return;
+      const { key: k, row } = ensure(p.name, p.name);
       // "Med stats" / matchesPlayed = kampe med registreret statistik (mål/assist/kort ELLER kampens spiller).
-      out[k].matchesPlayed += 1;
+      row.matchesPlayed += 1;
       countedThisMatch.add(k);
-      out[k].goals       += p.goals || 0;
-      out[k].assists     += p.assists || 0;
-      out[k].yellowCards += p.yellowCards || 0;
-      out[k].redCards    += p.redCards || 0;
+      row.goals       += p.goals || 0;
+      row.assists     += p.assists || 0;
+      row.yellowCards += p.yellowCards || 0;
+      row.redCards    += p.redCards || 0;
       // Point for netop DENNE kamp – loftet, så mål/assist aldrig kan overgå kampens spiller.
       const rawGoalAssist = (p.goals || 0) * WEIGHTS.goal + (p.assists || 0) * WEIGHTS.assist;
       const cappedGoalAssist = Math.min(rawGoalAssist, MAX_GOAL_ASSIST_POINTS_PER_MATCH);
       const cardPenalty = (p.yellowCards || 0) * WEIGHTS.yellowCard + (p.redCards || 0) * WEIGHTS.redCard;
-      out[k].score += cappedGoalAssist + cardPenalty;
+      row.score += cappedGoalAssist + cardPenalty;
     });
-    // Understøtter co-vindere (motmKeys) ved lige stemmetal – bagudkompatibelt med motmKey alene.
-    getMotmWinners(matchStat).forEach(({ key, name }) => {
-      if (!out[key]) out[key] = emptySeasonPlayer(name || key);
-      if (!countedThisMatch.has(key)) {
-        out[key].matchesPlayed += 1;
-        countedThisMatch.add(key);
+    // KS fra stemmer når muligt (co-vindere) – ellers gemt motmKey/motmKeys.
+    const matchVotes = getMatchEntry(votes, matchId);
+    getMotmWinners(effectiveMotm(matchStat, matchVotes)).forEach(({ key, name }) => {
+      const { key: k, row } = ensure(key, name || key);
+      if (!countedThisMatch.has(k)) {
+        row.matchesPlayed += 1;
+        countedThisMatch.add(k);
       }
-      out[key].motmWins += 1;
-      out[key].score += WEIGHTS.motm;
+      row.motmWins += 1;
+      row.score += WEIGHTS.motm;
     });
   });
 
   // Totale MotM-stemmer over sæsonen (Sæsonens spiller).
   Object.values(votes || {}).forEach((matchVotes) => {
     Object.entries(matchVotes || {}).forEach(([key, entry]) => {
-      if (!out[key]) out[key] = emptySeasonPlayer(entry.name || key);
-      out[key].totalVotes += entry.count || 0;
-      if (entry.name) out[key].name = entry.name;
+      const { row } = ensure(key, entry.name || key);
+      row.totalVotes += entry.count || 0;
     });
   });
 
@@ -490,10 +548,15 @@ function reducer(state, action) {
       if (state.openMatchId && state.openMatchId !== action.matchId) return state;
       return { ...state, openMatchId: action.matchId };
     case "CLOSE_MATCH": {
-      const matchVotes = state.votes[action.matchId] || {};
+      const matchVotes = getMatchEntry(state.votes, action.matchId) || {};
       const motm = resolveMotm(matchVotes);
-      const prevMatchData = state.matchStats[action.matchId] || { players: [] };
-      return { ...state, openMatchId: null, revealed: { ...state.revealed, [action.matchId]: true }, matchStats: { ...state.matchStats, [action.matchId]: { ...prevMatchData, ...motm } } };
+      const prevMatchData = getMatchEntry(state.matchStats, action.matchId) || { players: [] };
+      return {
+        ...state,
+        openMatchId: null,
+        revealed: setMatchEntry(state.revealed || {}, action.matchId, true),
+        matchStats: setMatchEntry(state.matchStats, action.matchId, { ...prevMatchData, ...motm }),
+      };
     }
     case "RESET_VOTES": {
       const newVotes = { ...state.votes };
@@ -679,16 +742,20 @@ function VoteView({ state, dispatch, voteError, onNavigate }) {
   // Persisteret status – overlever faneskift og genindlæsning af siden.
   const alreadyVotedFor = openMatchId ? votedMatches[openMatchId] : null;
   const openIsRevealed = openMatchId ? !!revealed[openMatchId] : false;
-  const openMotmName = openMatchId ? matchStats[openMatchId]?.motmName : null;
+  const openMotmName = openMatchId
+    ? effectiveMotm(getMatchEntry(matchStats, openMatchId), getMatchEntry(votes, openMatchId)).motmName
+    : null;
   const openVoteCount = openMatchId
-    ? Object.values(votes[openMatchId] || {}).reduce((a, b) => a + (b.count || 0), 0)
+    ? Object.values(getMatchEntry(votes, openMatchId) || {}).reduce((a, b) => a + (b.count || 0), 0)
     : 0;
 
   // Seneste afslørede kamp (til fejring når der ikke er en åben afstemning).
   const latestRevealed = [...(state.matches || [])]
-    .filter(m => revealed[m.id] && matchStats[m.id]?.motmName)
+    .filter(m => revealed[m.id] && effectiveMotm(getMatchEntry(matchStats, m.id), getMatchEntry(votes, m.id)).motmName)
     .sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))[0];
-  const latestMotm = latestRevealed ? matchStats[latestRevealed.id]?.motmName : null;
+  const latestMotm = latestRevealed
+    ? effectiveMotm(getMatchEntry(matchStats, latestRevealed.id), getMatchEntry(votes, latestRevealed.id)).motmName
+    : null;
 
   // Næste kommende (eller seneste uafsluttede) kamp – giver idle-skærmen retning.
   const nextMatch = [...(state.matches || [])]
@@ -800,7 +867,7 @@ function VoteView({ state, dispatch, voteError, onNavigate }) {
         ) : state.matches.map(m => {
           const isActive = m.id === openMatchId;
           const done = revealed[m.id];
-          const motm = matchStats[m.id]?.motmName;
+          const motm = effectiveMotm(getMatchEntry(matchStats, m.id), getMatchEntry(votes, m.id)).motmName;
           return (
             <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 11px", borderRadius: "7px", marginBottom: "5px", background: isActive ? "rgba(34,197,94,0.08)" : "transparent", border: isActive ? "1px solid rgba(74,222,128,0.25)" : `1px solid ${C.border}` }}>
               <div style={{ fontSize: "11px", color: C.muted, width: "66px", flexShrink: 0 }}>{fmtDate(m.date)}</div>
@@ -1179,6 +1246,7 @@ function MatchesTab({ state, dispatch, seasonScope }) {
         const totalVotes = Object.values(matchVotes).reduce((a, b) => a + (b.count || 0), 0);
         const stats = getMatchEntry(matchStats, m.id);
         const hasStats = (stats?.players?.length || 0) > 0;
+        const motmLabel = effectiveMotm(stats, matchVotes).motmName;
         const votesExpanded = expandedVotes.has(m.id);
         const moreExpanded = expandedMore.has(m.id);
         return (
@@ -1200,7 +1268,7 @@ function MatchesTab({ state, dispatch, seasonScope }) {
                 {!isArchived && isOpen && <button title="Lukker afstemningen og afslører kampens spiller" style={S.btn("danger", false)} onClick={() => dispatch({ type: "CLOSE_MATCH", matchId: m.id })}>Luk & afslør</button>}
                 {(isRevealed || isArchived) && (
                   <span style={{ fontSize: "11px", color: "#4ade80" }}>
-                    ✓ Afsluttet{stats?.motmName ? ` · ⭐ ${stats.motmName}` : ""}
+                    ✓ Afsluttet{motmLabel ? ` · ⭐ ${motmLabel}` : ""}
                   </span>
                 )}
                 <button
@@ -2304,15 +2372,15 @@ function BackupTab({ state, dispatch }) {
       for (const m of slice.matches || []) {
         const votes = getMatchEntry(slice.votes, m.id) || {};
         const totalVotes = Object.values(votes).reduce((a, b) => a + (b.count || 0), 0);
-        const winner = Object.entries(votes).sort((a, b) => b[1].count - a[1].count)[0];
         const stats = getMatchEntry(slice.matchStats, m.id);
-        const motmName = stats?.motmName || (winner ? winner[1].name : "");
+        // Genberegn KS fra stemmer (inkl. co-vindere) – samme logik som rangliste/CSV-sæson.
+        const motmName = effectiveMotm(stats, votes).motmName || "";
         rows.push({
           Sæson: slice.label,
           Dato: m.date,
           Modstander: opponent(m, state.teamName),
           "Hjemme/ude": isHome(m, state.teamName) ? "Hjemme" : "Ude",
-          "Kampens spiller": motmName || "",
+          "Kampens spiller": motmName,
           Stemmer: totalVotes,
         });
       }
